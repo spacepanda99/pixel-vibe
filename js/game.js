@@ -1,6 +1,6 @@
 // Pixel Vibe game screen: three cannons that fire on their instrument's notes,
 // three piano keys that raise a shield over each cannon, and drag-to-aim.
-import { Music } from './audio.js?v=0.1.0';
+import { Music } from './audio.js?v=0.2.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -8,13 +8,6 @@ const TURRET_X = [30, 90, 150];
 const COLORS = ['#ff7a3d', '#37e0ff', '#ff4fd8'];   // drums, bass, vibraphone
 const AIM_LIMIT = 1.25;              // radians either side of straight up
 const BARREL = 13;
-
-// Pixel glyphs on the keys: drum, bass note, vibraphone bars.
-const GLYPHS = [
-  ['.###.', '#####', '#...#', '#...#', '.###.'],
-  ['..##.', '..#.#', '..#..', '###..', '###..'],
-  ['#.#.#', '#.#.#', '#.#.#', '..#.#', '....#'],
-];
 
 const SHOT = {
   kick:  { speed: 150, trail: 6 },
@@ -239,31 +232,25 @@ function drawKeys() {
     const s = shields[i], down = s.down > 0;
     const x0 = i * 60 + 1, w = 58;
     const faceY = keyTop + 2 + (down ? 2 : 0), faceH = KEY_H - 9;
-    // Key side (gets shorter when pressed)
-    g.fillStyle = '#6d7594';
-    g.fillRect(x0, faceY + faceH, w, keyTop + KEY_H - 1 - (faceY + faceH));
-    // Face
-    g.fillStyle = down ? '#ffffff' : '#dfe3ef';
-    g.fillRect(x0, faceY, w, faceH);
-    if (down) {
-      g.globalAlpha = 0.28;
-      g.fillStyle = s.color;
-      g.fillRect(x0, faceY, w, faceH);
-      g.globalAlpha = 1;
-    }
-    g.fillStyle = '#f7f8fd';
-    g.fillRect(x0, faceY, w, 1);
-    // LED strip in the cannon's colour
+    // Each key is its shield's colour: dimmed at rest, full and lit when held.
+    const sideY = faceY + faceH, sideH = keyTop + KEY_H - 1 - sideY;
     g.fillStyle = s.color;
-    g.globalAlpha = down ? 1 : 0.5;
-    g.fillRect(x0 + 6, faceY + 4, w - 12, 3);
-    g.globalAlpha = 1;
-    // Glyph, drawn at 2x
-    g.fillStyle = down ? s.color : '#3a4270';
-    const glyph = GLYPHS[i], gx = x0 + w / 2 - 5, gy = faceY + 12;
-    for (let r = 0; r < glyph.length; r++) {
-      for (let c = 0; c < glyph[r].length; c++) if (glyph[r][c] === '#') g.fillRect(gx + c * 2, gy + r * 2, 2, 2);
+    g.fillRect(x0, faceY, w, faceH + sideH);
+    g.fillStyle = '#000';
+    g.globalAlpha = 0.55;
+    g.fillRect(x0, sideY, w, sideH);
+    if (!down) {
+      g.globalAlpha = 0.4;
+      g.fillRect(x0, faceY, w, faceH);
     }
+    g.fillStyle = '#fff';
+    g.globalAlpha = down ? 0.9 : 0.35;
+    g.fillRect(x0, faceY, w, 1);
+    if (down) {
+      g.globalAlpha = 0.25 + 0.1 * s.flash;
+      g.fillRect(x0 + 2, faceY + 2, w - 4, faceH - 4);
+    }
+    g.globalAlpha = 1;
   }
 }
 
@@ -404,6 +391,9 @@ function frame(now) {
 addEventListener('resize', resize);
 resize();
 requestAnimationFrame(frame);
+
+// Offline play and "Install app" support.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // Read-only hooks for headless checks.
 window.__pv = { weapons, shields, get shots() { return shots.length; }, music };

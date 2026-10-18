@@ -18,7 +18,18 @@ export const LOADOUT = {
   kit: { dir: 'tr808', kick: 'BD2525', snare: 'SD2550', hat: 'CH', openHat: 'OH10', clap: 'CP' },
   bass: { name: 'synth_bass_1', lo: 1, hi: 4 },
   harmony: { name: 'vibraphone', lo: 2, hi: 6 },
-  keys: { name: 'pad_2_warm', lo: 2, hi: 6 },
+  // The player's own instrument on the shield keys: a big layered synth.
+  // Two detuned saws spread left/right, synth brass for bite, a saw an octave
+  // down for weight, then a filter sweep and a dotted-8th echo (see keyOn).
+  keys: {
+    lo: 2, hi: 6,
+    layers: [
+      { name: 'lead_2_sawtooth', vol: 0.34, detune: -9, pan: -0.6 },
+      { name: 'lead_2_sawtooth', vol: 0.34, detune: 9, pan: 0.6 },
+      { name: 'synth_brass_1', vol: 0.3 },
+      { name: 'lead_2_sawtooth', vol: 0.22, octave: -12 },
+    ],
+  },
 };
 
 // Am - F - C - G, one bar each. triad = root, third, fifth (MIDI). Each shield
@@ -82,6 +93,22 @@ export class Music {
     this.out.gain.value = 0.8;
     const comp = this.ctx.createDynamicsCompressor();
     this.out.connect(comp).connect(this.ctx.destination);
+    // Key bus: dry plus a dotted-8th echo that stays darker than the dry sound.
+    const c = this.ctx;
+    this.keyBus = c.createGain();
+    this.keyBus.connect(this.out);
+    const delay = c.createDelay(1);
+    delay.delayTime.value = STEP * 3;
+    const fb = c.createGain();
+    fb.gain.value = 0.32;
+    const dark = c.createBiquadFilter();
+    dark.type = 'lowpass';
+    dark.frequency.value = 3000;
+    const wet = c.createGain();
+    wet.gain.value = 0.28;
+    this.keyBus.connect(delay);
+    delay.connect(dark).connect(fb).connect(delay);
+    dark.connect(wet).connect(this.out);
     return this.loadAll().then(() => { this.ready = true; });
   }
 
@@ -91,8 +118,13 @@ export class Music {
     await Promise.all(['kick', 'snare', 'hat', 'openHat', 'clap'].map(async n => {
       try { this.kit[n] = await load(c, `audio/drums/${k.dir}/${k[n]}.wav`); } catch { /* play without it */ }
     }));
-    [this.bass, this.harmony, this.keys] = await Promise.all(
-      [LOADOUT.bass, LOADOUT.harmony, LOADOUT.keys].map(i => loadInstrument(c, i)));
+    const keyNames = [...new Set(LOADOUT.keys.layers.map(l => l.name))];
+    const [bass, harmony, ...keySets] = await Promise.all([
+      loadInstrument(c, LOADOUT.bass), loadInstrument(c, LOADOUT.harmony),
+      ...keyNames.map(name => loadInstrument(c, { name, lo: LOADOUT.keys.lo, hi: LOADOUT.keys.hi }))]);
+    this.bass = bass;
+    this.harmony = harmony;
+    this.keys = Object.fromEntries(keyNames.map((n, i) => [n, keySets[i]]));
   }
 
   get running() { return !!this.timer && this.ctx.state === 'running'; }
@@ -192,17 +224,52 @@ export class Music {
     return { src, g };
   }
 
-  // Shield keys: a held note from the chord that's playing, until release.
+  // Shield keys: the layered synth plays a tone of the chord that's sounding
+  // and holds it (the steady middle of each sample loops) until release.
   keyOn(i) {
-    if (!this.running || !this.keys?.length) return null;
-    return this.note(this.keys, this.chordNow().triad[i] + 12, this.ctx.currentTime, 0.55, 0);
+    if (!this.running || !this.keys) return null;
+    const c = this.ctx, t = c.currentTime;
+    const midi = this.chordNow().triad[i] + 12;
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 5;
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(7000, t + 0.04);
+    lp.frequency.setTargetAtTime(2800, t + 0.04, 0.25);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.9, t + 0.005);
+    lp.connect(g).connect(this.keyBus);
+    const srcs = [];
+    for (const L of LOADOUT.keys.layers) {
+      const m = midi + (L.octave || 0);
+      const s = nearest(this.keys[L.name] || [], m);
+      if (!s) continue;
+      const src = c.createBufferSource();
+      src.buffer = s.buf;
+      src.playbackRate.value = Math.pow(2, (m - s.midi) / 12 + (L.detune || 0) / 1200);
+      src.loop = true;
+      src.loopStart = s.start + 0.3;
+      src.loopEnd = s.start + 1.5;
+      const lg = c.createGain();
+      lg.gain.value = L.vol;
+      src.connect(lg);
+      if (L.pan && c.createStereoPanner) {
+        const p = c.createStereoPanner();
+        p.pan.value = L.pan;
+        lg.connect(p).connect(lp);
+      } else lg.connect(lp);
+      src.start(t, s.start);
+      srcs.push(src);
+    }
+    return { g, srcs };
   }
 
   keyOff(v) {
     if (!v) return;
     const t = this.ctx.currentTime, p = v.g.gain;
     if (p.cancelAndHoldAtTime) p.cancelAndHoldAtTime(t); else p.cancelScheduledValues(t);
-    p.setTargetAtTime(0, t, 0.06);
-    v.src.stop(t + 0.5);
+    p.setTargetAtTime(0, t, 0.08);
+    for (const s of v.srcs) s.stop(t + 0.6);
   }
 }
