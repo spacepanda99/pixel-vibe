@@ -2,7 +2,7 @@
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
 // shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
 // so blocking it in time plays the lead part. Beat three bosses to clear the level.
-import { Music, STEP } from './audio.js?v=0.6.0';
+import { Music, STEP } from './audio.js?v=0.7.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -65,7 +65,7 @@ const BOSSES = [
 // Aim assist: dragging near a target locks the cannon onto it and it tracks
 // it; when that target dies the cannon picks the next one near where it points.
 // Shots also curve gently toward their cannon's target.
-const LOCK_CONE = 0.35, HOMING = 5;   // radians; radians per second
+const LOCK_CONE = 0.6, HOMING = 5;    // radians; radians per second
 
 const canvas = document.getElementById('screen');
 const g = canvas.getContext('2d');
@@ -178,12 +178,14 @@ function alive(t) { return t && t.hp > 0 && !t.gone; }
 
 function angleTo(w, t) { return Math.atan2(t.x - w.x, turretY - t.y); }
 
+// Best target near `angle`; targets another cannon already has count as a bit further away.
 function findTarget(w, angle, cone) {
   let best = null, bestD = cone;
   for (const t of targets()) {
     const a = angleTo(w, t);
     if (Math.abs(a) > AIM_LIMIT) continue;
-    const d = Math.abs(a - angle);
+    const taken = weapons.some(o => o !== w && o.lock === t);
+    const d = Math.abs(a - angle) + (taken ? 0.25 : 0);
     if (d < bestD) { best = t; bestD = d; }
   }
   return best;
@@ -193,7 +195,8 @@ function trackTargets(dt) {
   for (const w of weapons) {
     if (w.dead) continue;
     w.noLock = Math.max(0, (w.noLock || 0) - dt);
-    if (!alive(w.lock)) w.lock = w.noLock > 0 ? null : findTarget(w, w.angle, LOCK_CONE);
+    // No target? Take the one closest to where it points, anywhere in range: cannons aim themselves.
+    if (!alive(w.lock)) w.lock = w.noLock > 0 ? null : findTarget(w, w.angle, Infinity);
     if (w.lock) w.angle = Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, angleTo(w, w.lock)));
   }
 }
@@ -979,12 +982,16 @@ const startEl = document.getElementById('start');
 const startBtn = document.getElementById('startBtn');
 const pauseEl = document.getElementById('pause');
 const pauseBtn = document.getElementById('pauseBtn');
+const closeGameBtn = document.getElementById('closeGame');
 let paused = false;
-let backArmed = false;      // a history entry is pushed, so the phone's Back button opens the pause menu
 let updateReady = false;    // a newer version took over; load it at the next quit
 
-function armBack() {
-  if (!backArmed) { history.pushState({ pv: 1 }, ''); backArmed = true; }
+// No history.pushState anywhere: a page may only close itself (the X buttons)
+// while its history holds a single entry.
+
+function showGameButtons(on) {
+  pauseBtn.hidden = !on;
+  closeGameBtn.hidden = !on;
 }
 
 function pauseGame() {
@@ -1000,12 +1007,11 @@ function resumeGame() {
   pauseEl.hidden = true;
   music.resume();
   last = performance.now();
-  armBack();
 }
 
 function playAgain() {
   resumeGame();
-  pauseBtn.hidden = false;
+  showGameButtons(true);
   reset();
 }
 
@@ -1014,7 +1020,7 @@ function quitToTitle() {
   paused = false;
   pauseEl.hidden = true;
   endEl.hidden = true;
-  pauseBtn.hidden = true;
+  showGameButtons(false);
   releaseAll();
   music.stop();
   state = 'title';
@@ -1026,11 +1032,6 @@ function quitToTitle() {
 
 // Leaving the app mid-game (home button, call, lock screen) comes back to the pause menu.
 document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
-// Back opens the pause menu; Back again leaves the app.
-addEventListener('popstate', () => {
-  backArmed = false;
-  pauseGame();
-});
 addEventListener('keydown', e => {
   if (e.key !== 'Escape' || state === 'title' || !endEl.hidden) return;
   if (paused) resumeGame(); else pauseGame();
@@ -1044,8 +1045,7 @@ startEl.addEventListener('click', () => {
   if (!music.ready) return;
   music.start();
   startEl.hidden = true;
-  pauseBtn.hidden = false;
-  armBack();
+  showGameButtons(true);
   reset();
 });
 pauseBtn.addEventListener('click', pauseGame);
@@ -1055,21 +1055,17 @@ document.getElementById('quitBtn').addEventListener('click', quitToTitle);
 document.getElementById('againBtn').addEventListener('click', playAgain);
 document.getElementById('menuBtn').addEventListener('click', quitToTitle);
 
-// X: close the app. An installed app on Android can usually close itself;
-// where the browser won't allow it (iPhone, a normal tab), say how instead.
-const closedEl = document.getElementById('closed');
+// X: close the app. Browsers allow this for an installed app or a tab with a
+// single history entry. Where it's refused (iPhone home-screen apps), fall
+// back to the title screen with the music stopped.
 function closeApp(e) {
   e.stopPropagation();
   releaseAll();
   music.stop();
   window.close();
-  setTimeout(() => { closedEl.hidden = false; }, 300);
+  setTimeout(() => { if (state !== 'title') quitToTitle(); }, 300);
 }
-for (const id of ['closeTitle', 'closePause']) document.getElementById(id).addEventListener('click', closeApp);
-document.getElementById('reopenBtn').addEventListener('click', () => {
-  closedEl.hidden = true;
-  quitToTitle();
-});
+for (const id of ['closeTitle', 'closePause', 'closeGame']) document.getElementById(id).addEventListener('click', closeApp);
 
 let last = performance.now();
 function frame(now) {

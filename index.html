@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=0.6.0">
+<link rel="stylesheet" href="css/style.css?v=0.7.0">
 </head>
 <body>
 <canvas id="screen" aria-label="Pixel Vibe game screen"></canvas>
@@ -37,6 +37,7 @@
 </div>
 
 <button id="pauseBtn" type="button" aria-label="Pause" hidden>II</button>
+<button id="closeGame" class="closeX" type="button" aria-label="Close app" hidden>X</button>
 
 <div id="pause" class="overlay" hidden>
   <button id="closePause" class="closeX" type="button" aria-label="Close app">X</button>
@@ -46,13 +47,7 @@
   <button id="quitBtn" class="btn alt" type="button">QUIT</button>
 </div>
 
-<div id="closed" class="overlay" hidden>
-  <h2>SEE YOU!</h2>
-  <p class="hint">Swipe the app away to close it.</p>
-  <button id="reopenBtn" class="btn alt" type="button">PLAY</button>
-</div>
-
-<footer id="ver">v0.6.0</footer>
-<script type="module" src="js/game.js?v=0.6.0"></script>
+<footer id="ver">v0.7.0</footer>
+<script type="module" src="js/game.js?v=0.7.0"></script>
 </body>
 </html>
