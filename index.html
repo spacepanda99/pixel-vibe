@@ -15,15 +15,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=0.5.0">
+<link rel="stylesheet" href="css/style.css?v=0.6.0">
 </head>
 <body>
 <canvas id="screen" aria-label="Pixel Vibe game screen"></canvas>
 
 <div id="start" class="overlay">
+  <button id="closeTitle" class="closeX" type="button" aria-label="Close app">X</button>
   <h1>PIXEL<br>VIBE</h1>
   <button id="startBtn" class="btn" type="button" disabled>LOADING…</button>
-  <p class="hint">Drag above a cannon to aim it.<br>Hold a key to raise its shield.<br>Shoot the ships before they wreck your blocks.</p>
+  <p class="hint">Drag toward a ship to lock a cannon on.<br>Hold a key to raise its shield.<br>Block the boss on the beat, knock out its coloured blocks.</p>
   <p class="credit">Drums: TR-808 by Michael Fischer.<br>Instruments: FluidR3 GM (CC BY 3.0) via gleitz.</p>
 </div>
 
@@ -38,13 +39,20 @@
 <button id="pauseBtn" type="button" aria-label="Pause" hidden>II</button>
 
 <div id="pause" class="overlay" hidden>
+  <button id="closePause" class="closeX" type="button" aria-label="Close app">X</button>
   <h2>PAUSED</h2>
   <button id="resumeBtn" class="btn" type="button">RESUME</button>
   <button id="restartBtn" class="btn alt" type="button">RESTART</button>
   <button id="quitBtn" class="btn alt" type="button">QUIT</button>
 </div>
 
-<footer id="ver">v0.5.0</footer>
-<script type="module" src="js/game.js?v=0.5.0"></script>
+<div id="closed" class="overlay" hidden>
+  <h2>SEE YOU!</h2>
+  <p class="hint">Swipe the app away to close it.</p>
+  <button id="reopenBtn" class="btn alt" type="button">PLAY</button>
+</div>
+
+<footer id="ver">v0.6.0</footer>
+<script type="module" src="js/game.js?v=0.6.0"></script>
 </body>
 </html>

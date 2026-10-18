@@ -87,6 +87,22 @@ h1 {
 }
 #pauseBtn[hidden] { display: none; }
 
+.closeX {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 2px solid #3a4270;
+  cursor: pointer;
+}
+.closeX:hover, .closeX:focus-visible { border-color: #ff5b5b; color: #ff5b5b; outline: none; }
+
 h2 { margin: 0; font-size: clamp(20px, 7vw, 32px); font-weight: 400; text-shadow: 3px 3px 0 var(--vibe), -3px -3px 0 var(--bass); }
 
 #banner {
@@ -111,7 +127,8 @@ h2 { margin: 0; font-size: clamp(20px, 7vw, 32px); font-weight: 400; text-shadow
 #ver {
   position: fixed;
   top: calc(6px + env(safe-area-inset-top));
-  right: 8px;
+  left: 50%;
+  transform: translateX(-50%);
   font-size: 7px;
   opacity: 0.4;
   pointer-events: none;
