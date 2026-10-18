@@ -1,8 +1,8 @@
 // Pixel Vibe game: three cannons on block foundations fire on their
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
-// shots. After the wave a boss fires down at each cannon on a lead rhythm, so
-// blocking it in time plays the lead part on the keys.
-import { Music, STEP } from './audio.js?v=0.3.0';
+// shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
+// so blocking it in time plays the lead part. Beat three bosses to clear the level.
+import { Music, STEP } from './audio.js?v=0.4.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -28,9 +28,10 @@ const SHOT = {
 // Shield energy: drains while held, refills when let go, so shields are for timing, not camping.
 const SHIELD_DRAIN = 1 / 1.6, SHIELD_REFILL = 1 / 2.5;
 
-// Enemy wave
-const WAVE_SIZE = 8, ENEMY_HP = 60, SPAWN_GAP = 3.5, ENEMY_SHOT_SPEED = 75;
-const SLOTS = [[34, 70], [90, 52], [146, 70], [62, 100], [118, 100]];
+// Enemy waves: ships keep arriving for WAVE_TIME seconds, then the boss comes.
+const WAVE_TIME = 45, ENEMY_HP = 20, SPAWN_GAP = 2.5, ENEMY_SHOT_SPEED = 75;
+const ENEMY_SCALE = 2;               // sprite drawn at 2x so ships are easy to hit
+const SLOTS = [[34, 74], [90, 52], [146, 74], [60, 110], [120, 110]];
 const ENEMY_SPRITE = [
   '....a...a....',
   '.....a.a.....',
@@ -43,11 +44,19 @@ const ENEMY_SPRITE = [
 ];
 const ENEMY_COLORS = ['#7cff5b', '#ff5b5b', '#c18bff', '#ffd23d'];
 
-// Boss: fires from the port above each cannon. Each digit is the cannon its
-// shot lands on, on that 16th step (two bars, looping). Blocking every shot
-// as it lands plays this rhythm on the keys: the lead part.
-const BOSS_HP = 700, BOSS_Y = 34, BOSS_SHOT_SPEED = 110;
-const BOSS_PATTERN = '0..1..2.1.0.2.1.' + '2.1.0..1.2.1.0..';
+// Bosses, one after each wave; beating the last clears the level. Each fires
+// from the port above each cannon. A pattern digit is the cannon its shot
+// lands on, on that 16th step (two bars, looping). Blocking every shot as it
+// lands plays the rhythm on the keys: the lead part. Patterns get busier.
+const BOSS_Y = 34, BOSS_SHOT_SPEED = 110;
+const BOSSES = [
+  { name: 'BOSS 1', style: 'saucer', hp: 400, hull: '#5a1f6e', dome: '#7a2b94', trim: '#3a1247', eye: '#ffd23d',
+    pattern: '0...1...2...1...' + '0...1...2.1.0...' },
+  { name: 'BOSS 2', style: 'crab', hp: 550, hull: '#7a1e2a', dome: '#b8324a', trim: '#3e0d16', eye: '#7cff5b',
+    pattern: '0..1..2.1.0.2.1.' + '2.1.0..1.2.1.0..' },
+  { name: 'BOSS 3', style: 'mothership', hp: 700, hull: '#6b5310', dome: '#c99a1e', trim: '#3a2c07', eye: '#37e0ff',
+    pattern: '0.1.2.1.0.2.1.2.' + '0.2.1.0..1.2.0.1' },
+];
 
 const canvas = document.getElementById('screen');
 const g = canvas.getContext('2d');
@@ -61,8 +70,8 @@ const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice
 let foundations = [];
 let shots = [], enemyShots = [], bossShots = [], sparks = [], stars = [];
 let enemies = [], boss = null;
-let state = 'title';                 // title, wave, bossIntro, boss, over, clear
-let spawned = 0, killed = 0, spawnTimer = 0, stateTimer = 0, lastStep = -1;
+let state = 'title';                 // title, wave, bossIntro, boss, bossDown, over, clear
+let stage = 0, waveTimer = 0, spawned = 0, killed = 0, spawnTimer = 0, stateTimer = 0, lastStep = -1;
 let pulse = 0, shake = 0;
 
 function resize() {
@@ -98,10 +107,27 @@ function reset() {
   shields.forEach(s => { s.energy = 1; });
   music.muted = [false, false, false];
   shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null;
-  spawned = 0; killed = 0; spawnTimer = 1; lastStep = -1;
+  spawned = 0; killed = 0; lastStep = -1; stage = 0;
   endEl.hidden = true;
+  startWave();
+}
+
+function startWave() {
   state = 'wave';
-  banner('WAVE 1');
+  waveTimer = WAVE_TIME;
+  spawnTimer = 1;
+  banner('WAVE ' + (stage + 1));
+}
+
+// Between bosses, surviving cannons get their foundations rebuilt.
+function repairFoundations() {
+  foundations.forEach((f, i) => {
+    if (weapons[i].dead) return;
+    for (let r = 0; r < F_ROWS; r++) {
+      for (let c = 0; c < F_COLS; c++) if (Math.abs(c - 9) <= halfWidth(r)) f.alive[r * F_COLS + c] = 1;
+    }
+    f.count = f.total;
+  });
 }
 
 function banner(text) {
@@ -113,7 +139,7 @@ function banner(text) {
 
 function endGame(won) {
   state = won ? 'clear' : 'over';
-  endEl.querySelector('h2').textContent = won ? 'STAGE CLEAR' : 'GAME OVER';
+  endEl.querySelector('h2').textContent = won ? 'LEVEL CLEAR' : 'GAME OVER';
   endEl.hidden = false;
 }
 
@@ -235,8 +261,8 @@ function enemyFire(e) {
   if (!alive.length) return;
   const i = alive[Math.floor(Math.random() * alive.length)];
   const tx = TURRET_X[i] + (Math.random() - 0.5) * 24, ty = foundTop;
-  const dx = tx - e.x, dy = ty - (e.y + 5), d = Math.hypot(dx, dy);
-  enemyShots.push({ x: e.x, y: e.y + 5, vx: dx / d * ENEMY_SHOT_SPEED, vy: dy / d * ENEMY_SHOT_SPEED });
+  const dx = tx - e.x, dy = ty - (e.y + 9), d = Math.hypot(dx, dy);
+  enemyShots.push({ x: e.x, y: e.y + 9, vx: dx / d * ENEMY_SHOT_SPEED, vy: dy / d * ENEMY_SHOT_SPEED });
 }
 
 function killEnemy(e) {
@@ -265,8 +291,9 @@ function updateBoss(dt) {
   // Launch each shot early enough that it reaches the shield exactly on its step.
   const now = music.heard();
   const y0 = b.y + 19, travel = (bossShotTop() - y0) / BOSS_SHOT_SPEED;
+  const pattern = b.def.pattern;
   while (music.stepTime(b.nextStep) - travel <= now) {
-    const ch = BOSS_PATTERN[(b.nextStep - b.startStep) % BOSS_PATTERN.length];
+    const ch = pattern[(b.nextStep - b.startStep) % pattern.length];
     if (ch !== '.') {
       const port = +ch;
       if (!weapons[port].dead) {
@@ -293,7 +320,7 @@ function updateBoss(dt) {
 
 function onStep(n) {
   if (state !== 'wave') return;
-  for (const e of enemies) if (e.t >= 1 && n % e.period === e.phase) enemyFire(e);
+  for (const e of enemies) if (e.t >= 1 && !e.leaving && n % e.period === e.phase) enemyFire(e);
 }
 
 function update(dt) {
@@ -325,22 +352,35 @@ function update(dt) {
 
   // Director
   if (state === 'wave') {
+    waveTimer -= dt;
     spawnTimer -= dt;
-    if (spawned < WAVE_SIZE && spawnTimer <= 0 && spawnEnemy()) spawnTimer = SPAWN_GAP;
-    if (killed >= WAVE_SIZE) { state = 'bossIntro'; stateTimer = 3; banner('WARNING: BOSS'); }
+    if (waveTimer > 4 && spawnTimer <= 0 && spawnEnemy()) spawnTimer = SPAWN_GAP;
+    if (waveTimer <= 0) {
+      // Time's up: the ships still up there retreat and the boss arrives.
+      for (const e of enemies) e.leaving = true;
+      state = 'bossIntro';
+      stateTimer = 3;
+      banner('WARNING: ' + BOSSES[stage].name);
+    }
   } else if (state === 'bossIntro') {
     stateTimer -= dt;
     if (stateTimer <= 0) {
       state = 'boss';
-      boss = { x: W / 2, y: -30, hp: BOSS_HP, flash: 0, portFlash: [0, 0, 0], startStep: 0, nextStep: 0 };
+      const def = BOSSES[stage];
+      boss = { def, x: W / 2, y: -30, hp: def.hp, flash: 0, portFlash: [0, 0, 0], startStep: 0, nextStep: 0 };
     }
+  } else if (state === 'bossDown') {
+    stateTimer -= dt;
+    if (stateTimer <= 0) startWave();
   }
 
   // Enemies fly in on a curve, then hover in their slot.
   for (const e of enemies) {
     const [sx, sy] = SLOTS[e.slot];
     e.flash = Math.max(0, e.flash - dt);
-    if (e.t < 1) {
+    if (e.leaving) {
+      e.y -= 70 * dt;
+    } else if (e.t < 1) {
       e.t = Math.min(1, e.t + dt / 2.2);
       const u = e.t * e.t * (3 - 2 * e.t), v = 1 - u;
       e.x = v * v * e.from.x + 2 * v * u * e.ctrl.x + u * u * sx;
@@ -357,7 +397,7 @@ function update(dt) {
   shots = shots.filter(s => {
     if (s.y < -12 || s.x < -12 || s.x > W + 12) return false;
     for (const e of enemies) {
-      if (e.hp > 0 && Math.abs(s.x - e.x) <= 8 && Math.abs(s.y - e.y) <= 6) {
+      if (e.hp > 0 && Math.abs(s.x - e.x) <= 14 && Math.abs(s.y - e.y) <= 10) {
         e.hp -= s.dmg;
         e.flash = 0.06;
         burst(s.x, s.y, s.color, 3, 40, 0.15);
@@ -376,13 +416,19 @@ function update(dt) {
         shake = 0.6;
         boss = null;
         bossShots = [];
-        endGame(true);
+        if (stage < BOSSES.length - 1) {
+          stage++;
+          state = 'bossDown';
+          stateTimer = 3;
+          repairFoundations();
+          banner('BOSS DOWN');
+        } else endGame(true);
       }
       return false;
     }
     return true;
   });
-  enemies = enemies.filter(e => e.hp > 0);
+  enemies = enemies.filter(e => e.hp > 0 && e.y > -30);
 
   // Enemy shots vs shields and blocks (never the cannons themselves)
   for (const s of enemyShots) { s.x += s.vx * dt; s.y += s.vy * dt; }
@@ -403,12 +449,12 @@ function disc(cx, cy, r) {
   }
 }
 
-function sprite(map, x, y, colors) {
-  const x0 = Math.round(x - map[0].length / 2), y0 = Math.round(y - map.length / 2);
+function sprite(map, x, y, colors, scale = 1) {
+  const x0 = Math.round(x - map[0].length * scale / 2), y0 = Math.round(y - map.length * scale / 2);
   for (let r = 0; r < map.length; r++) {
     for (let c = 0; c < map[r].length; c++) {
       const col = colors[map[r][c]];
-      if (col) { g.fillStyle = col; g.fillRect(x0 + c, y0 + r, 1, 1); }
+      if (col) { g.fillStyle = col; g.fillRect(x0 + c * scale, y0 + r * scale, scale, scale); }
     }
   }
 }
@@ -449,22 +495,55 @@ function drawFoundations() {
 function drawEnemies() {
   for (const e of enemies) {
     const body = e.flash > 0 ? '#ffffff' : e.color;
-    sprite(ENEMY_SPRITE, e.x, e.y, { a: '#ffd23d', b: body, c: '#05060c' });
+    sprite(ENEMY_SPRITE, e.x, e.y, { a: '#ffd23d', b: body, c: '#05060c' }, ENEMY_SCALE);
+  }
+  // Time left until the boss
+  if (state === 'wave') {
+    g.fillStyle = '#1a1f38';
+    g.fillRect(5, 3, W - 10, 2);
+    g.fillStyle = '#6a73a8';
+    g.fillRect(5, 3, Math.round((W - 10) * (1 - waveTimer / WAVE_TIME)), 2);
   }
   if (!boss) return;
-  const b = boss, x0 = Math.round(b.x - 70), y = Math.round(b.y);
-  const hull = b.flash > 0 ? '#ffffff' : '#5a1f6e', dome = b.flash > 0 ? '#ffffff' : '#7a2b94';
+  const b = boss, d = b.def, x0 = Math.round(b.x - 70), y = Math.round(b.y);
+  const hull = b.flash > 0 ? '#ffffff' : d.hull, dome = b.flash > 0 ? '#ffffff' : d.dome;
   g.fillStyle = hull;
   g.fillRect(x0 + 4, y, 132, 12);
   g.fillRect(x0, y + 3, 140, 6);
   g.fillStyle = dome;
-  g.fillRect(x0 + 40, y - 8, 60, 8);
-  g.fillRect(x0 + 50, y - 12, 40, 4);
-  g.fillStyle = '#ffd23d';
+  if (d.style === 'saucer') {
+    g.fillRect(x0 + 40, y - 8, 60, 8);
+    g.fillRect(x0 + 50, y - 12, 40, 4);
+  } else if (d.style === 'crab') {
+    // Claws hanging off each side, two eye stalks on top
+    g.fillStyle = hull;
+    g.fillRect(x0 - 2, y + 6, 8, 16);
+    g.fillRect(x0 + 134, y + 6, 8, 16);
+    g.fillStyle = dome;
+    g.fillRect(x0 + 2, y + 20, 8, 4);
+    g.fillRect(x0 + 130, y + 20, 8, 4);
+    g.fillRect(x0 + 44, y - 10, 6, 10);
+    g.fillRect(x0 + 90, y - 10, 6, 10);
+    g.fillRect(x0 + 30, y - 3, 80, 3);
+  } else {
+    // Mothership: tall stepped tower with running lights
+    g.fillRect(x0 + 20, y - 6, 100, 6);
+    g.fillRect(x0 + 36, y - 12, 68, 6);
+    g.fillRect(x0 + 54, y - 18, 32, 6);
+    g.fillStyle = d.eye;
+    for (let k = 0; k < 8; k++) {
+      g.globalAlpha = (k + Math.floor(performance.now() / 120)) % 4 === 0 ? 1 : 0.25;
+      g.fillRect(x0 + 26 + k * 12, y - 4, 3, 2);
+    }
+    g.globalAlpha = 1;
+  }
+  g.fillStyle = d.eye;
   g.globalAlpha = 0.6 + pulse * 0.4;
-  g.fillRect(x0 + 62, y - 7, 16, 3);
+  if (d.style === 'crab') { g.fillRect(x0 + 44, y - 13, 6, 3); g.fillRect(x0 + 90, y - 13, 6, 3); }
+  else if (d.style === 'mothership') g.fillRect(x0 + 62, y - 16, 16, 3);
+  else g.fillRect(x0 + 62, y - 7, 16, 3);
   g.globalAlpha = 1;
-  g.fillStyle = '#3a1247';
+  g.fillStyle = d.trim;
   for (let k = 0; k < 132; k += 6) g.fillRect(x0 + 4 + k, y + 10, 3, 1);
   for (let i = 0; i < 3; i++) {
     const px0 = TURRET_X[i];
@@ -479,7 +558,7 @@ function drawEnemies() {
   g.fillStyle = '#2a1030';
   g.fillRect(5, 3, W - 10, 3);
   g.fillStyle = '#ff4f6d';
-  g.fillRect(5, 3, Math.ceil((W - 10) * Math.max(0, b.hp) / BOSS_HP), 3);
+  g.fillRect(5, 3, Math.ceil((W - 10) * Math.max(0, b.hp) / d.hp), 3);
 }
 
 function drawShots() {
@@ -795,6 +874,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 window.__pv = {
   weapons, shields, music,
   get state() { return state; },
-  get counts() { return { shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { y: boss.y, hp: boss.hp } }; },
-  skipToBoss() { enemies = []; enemyShots = []; spawned = killed = WAVE_SIZE; },
+  get counts() { return { stage, waveTimer: +waveTimer.toFixed(1), shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { name: boss.def.name, y: boss.y, hp: boss.hp } }; },
+  skipToBoss() { waveTimer = 0; },
+  damageBoss(n) { if (boss) boss.hp = Math.min(boss.hp, n); },
 };
