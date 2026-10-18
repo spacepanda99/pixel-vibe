@@ -2,7 +2,7 @@
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
 // shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
 // so blocking it in time plays the lead part. Beat three bosses to clear the level.
-import { Music, STEP } from './audio.js?v=0.4.0';
+import { Music, STEP } from './audio.js?v=0.5.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -141,6 +141,7 @@ function endGame(won) {
   state = won ? 'clear' : 'over';
   endEl.querySelector('h2').textContent = won ? 'LEVEL CLEAR' : 'GAME OVER';
   endEl.hidden = false;
+  pauseBtn.hidden = true;
 }
 
 // ---------- particles ----------
@@ -831,14 +832,70 @@ function releaseAll() {
   turn.left = turn.right = false;
 }
 addEventListener('blur', releaseAll);
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { releaseAll(); music.pause(); } else music.resume();
-});
 
-// ---------- start ----------
+// ---------- start, pause and quit ----------
 
 const startEl = document.getElementById('start');
 const startBtn = document.getElementById('startBtn');
+const pauseEl = document.getElementById('pause');
+const pauseBtn = document.getElementById('pauseBtn');
+let paused = false;
+let backArmed = false;      // a history entry is pushed, so the phone's Back button opens the pause menu
+let updateReady = false;    // a newer version took over; load it at the next quit
+
+function armBack() {
+  if (!backArmed) { history.pushState({ pv: 1 }, ''); backArmed = true; }
+}
+
+function pauseGame() {
+  if (state === 'title' || paused || !endEl.hidden) return;
+  paused = true;
+  releaseAll();
+  music.pause();
+  pauseEl.hidden = false;
+}
+
+function resumeGame() {
+  paused = false;
+  pauseEl.hidden = true;
+  music.resume();
+  last = performance.now();
+  armBack();
+}
+
+function playAgain() {
+  resumeGame();
+  pauseBtn.hidden = false;
+  reset();
+}
+
+function quitToTitle() {
+  if (updateReady) { location.reload(); return; }
+  paused = false;
+  pauseEl.hidden = true;
+  endEl.hidden = true;
+  pauseBtn.hidden = true;
+  releaseAll();
+  music.stop();
+  state = 'title';
+  shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null; sparks = [];
+  weapons.forEach(w => { w.dead = false; w.angle = 0; });
+  buildFoundations();
+  startEl.hidden = false;
+}
+
+// Leaving the app mid-game (home button, call, lock screen) comes back to the pause menu.
+document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
+// Back opens the pause menu; Back again leaves the app.
+addEventListener('popstate', () => {
+  backArmed = false;
+  pauseGame();
+});
+addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || state === 'title' || !endEl.hidden) return;
+  if (paused) resumeGame(); else pauseGame();
+});
+
 music.init().then(() => {
   startBtn.disabled = false;
   startBtn.textContent = 'TAP TO START';
@@ -847,9 +904,16 @@ startEl.addEventListener('click', () => {
   if (!music.ready) return;
   music.start();
   startEl.hidden = true;
+  pauseBtn.hidden = false;
+  armBack();
   reset();
 });
-document.getElementById('againBtn').addEventListener('click', reset);
+pauseBtn.addEventListener('click', pauseGame);
+document.getElementById('resumeBtn').addEventListener('click', resumeGame);
+document.getElementById('restartBtn').addEventListener('click', playAgain);
+document.getElementById('quitBtn').addEventListener('click', quitToTitle);
+document.getElementById('againBtn').addEventListener('click', playAgain);
+document.getElementById('menuBtn').addEventListener('click', quitToTitle);
 
 let last = performance.now();
 function frame(now) {
@@ -857,7 +921,7 @@ function frame(now) {
   last = now;
   const spin = (turn.right ? 1 : 0) - (turn.left ? 1 : 0);
   if (spin) for (const w of weapons) w.angle = Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, w.angle + spin * dt * 1.8));
-  update(dt);
+  if (!paused) update(dt);
   draw();
   requestAnimationFrame(frame);
 }
@@ -867,13 +931,26 @@ resize();
 buildFoundations();
 requestAnimationFrame(frame);
 
-// Offline play and "Install app" support.
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Offline play and "Install app" support. sw.js always fetches code fresh, and
+// the app checks for a new version on every launch and every return to it. When
+// a new version takes over: reload now at the title screen, or at the next quit
+// so a game in progress is never cut off.
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;
+    if (state === 'title') location.reload(); else updateReady = true;
+  });
+}
 
 // Hooks for headless checks.
 window.__pv = {
   weapons, shields, music,
   get state() { return state; },
+  get paused() { return paused; },
   get counts() { return { stage, waveTimer: +waveTimer.toFixed(1), shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { name: boss.def.name, y: boss.y, hp: boss.hp } }; },
   skipToBoss() { waveTimer = 0; },
   damageBoss(n) { if (boss) boss.hp = Math.min(boss.hp, n); },

@@ -148,6 +148,14 @@ export class Music {
     this.schedule();
   }
 
+  // Back to silence at the title screen; start() begins the song again from bar one.
+  stop() {
+    clearInterval(this.timer);
+    this.timer = 0;
+    this.events = [];
+    this.ctx?.suspend();
+  }
+
   pause() { this.ctx?.suspend(); }
   resume() { if (this.timer) this.ctx?.resume(); }
 

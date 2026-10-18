@@ -15,14 +15,14 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=0.4.0">
+<link rel="stylesheet" href="css/style.css?v=0.5.0">
 </head>
 <body>
 <canvas id="screen" aria-label="Pixel Vibe game screen"></canvas>
 
 <div id="start" class="overlay">
   <h1>PIXEL<br>VIBE</h1>
-  <button id="startBtn" type="button" disabled>LOADING…</button>
+  <button id="startBtn" class="btn" type="button" disabled>LOADING…</button>
   <p class="hint">Drag above a cannon to aim it.<br>Hold a key to raise its shield.<br>Shoot the ships before they wreck your blocks.</p>
   <p class="credit">Drums: TR-808 by Michael Fischer.<br>Instruments: FluidR3 GM (CC BY 3.0) via gleitz.</p>
 </div>
@@ -31,10 +31,20 @@
 
 <div id="end" class="overlay" hidden>
   <h2>GAME OVER</h2>
-  <button id="againBtn" type="button">PLAY AGAIN</button>
+  <button id="againBtn" class="btn" type="button">PLAY AGAIN</button>
+  <button id="menuBtn" class="btn alt" type="button">MENU</button>
 </div>
 
-<footer id="ver">v0.4.0</footer>
-<script type="module" src="js/game.js?v=0.4.0"></script>
+<button id="pauseBtn" type="button" aria-label="Pause" hidden>II</button>
+
+<div id="pause" class="overlay" hidden>
+  <h2>PAUSED</h2>
+  <button id="resumeBtn" class="btn" type="button">RESUME</button>
+  <button id="restartBtn" class="btn alt" type="button">RESTART</button>
+  <button id="quitBtn" class="btn alt" type="button">QUIT</button>
+</div>
+
+<footer id="ver">v0.5.0</footer>
+<script type="module" src="js/game.js?v=0.5.0"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 // Pixel Vibe service worker: makes the game installable and playable offline.
 // Code is network-first (updates show up on the next launch); samples are
 // cache-first because a sample's content never changes under the same name.
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const CODE_CACHE = 'pv-code-' + VERSION;
 const AUDIO_CACHE = 'pv-audio-1';
 const CORE = ['./', 'index.html', `css/style.css?v=${VERSION}`, `js/game.js?v=${VERSION}`, `js/audio.js?v=${VERSION}`,
@@ -31,7 +31,8 @@ self.addEventListener('fetch', e => {
     }));
     return;
   }
-  e.respondWith(fetch(req).then(res => {
+  // no-store: skip the browser's HTTP cache too, so every launch gets the newest code.
+  e.respondWith(fetch(req, { cache: 'no-store' }).then(res => {
     if (res.ok) caches.open(CODE_CACHE).then(c => c.put(req, res.clone()));
     return res;
   }).catch(() => caches.match(req).then(hit => hit || caches.match('index.html'))));

@@ -57,7 +57,8 @@ h1 {
   text-shadow: 4px 4px 0 var(--vibe), -4px -4px 0 var(--bass);
 }
 
-#startBtn, #againBtn {
+.btn {
+  min-width: 210px;
   font: inherit;
   font-size: 14px;
   padding: 16px 20px;
@@ -67,6 +68,24 @@ h1 {
   cursor: pointer;
   animation: blink 1s steps(2) infinite;
 }
+.btn.alt { border-color: #3a4270; animation: none; }
+.btn:focus-visible, #pauseBtn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+#pauseBtn {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(8px + env(safe-area-inset-left));
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: rgba(5, 6, 12, 0.6);
+  border: 2px solid #3a4270;
+  cursor: pointer;
+}
+#pauseBtn[hidden] { display: none; }
 
 h2 { margin: 0; font-size: clamp(20px, 7vw, 32px); font-weight: 400; text-shadow: 3px 3px 0 var(--vibe), -3px -3px 0 var(--bass); }
 
@@ -101,5 +120,5 @@ h2 { margin: 0; font-size: clamp(20px, 7vw, 32px); font-weight: 400; text-shadow
 @keyframes blink { 50% { border-color: transparent; } }
 
 @media (prefers-reduced-motion: reduce) {
-  #startBtn, #againBtn { animation: none; }
+  .btn { animation: none; }
 }
