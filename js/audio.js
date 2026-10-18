@@ -5,7 +5,7 @@
 // the game drains once the note is audible, so shots fire on the beat you hear.
 
 export const BPM = 112;
-const STEP = 60 / BPM / 4;   // one 16th note, in seconds
+export const STEP = 60 / BPM / 4;   // one 16th note, in seconds
 const BAR = 16;
 const LOOKAHEAD = 0.12;
 const TICK_MS = 25;
@@ -15,7 +15,9 @@ const GRID = [0, 3, 6, 9];   // pitch classes stored on disk (see audio/CREDITS.
 
 // What each cannon and the shield keys play. Ships will swap these later.
 export const LOADOUT = {
-  kit: { dir: 'tr808', kick: 'BD2525', snare: 'SD2550', hat: 'CH', openHat: 'OH10', clap: 'CP' },
+  kit: { dir: 'tr808', kick: 'BD2525', snare: 'SD2550', hat: 'CH', openHat: 'OH10', clap: 'CP',
+    // Sound effects (not part of the beat)
+    boom: 'BD2575', crash: 'CY2550', crumble: 'MA' },
   bass: { name: 'synth_bass_1', lo: 1, hi: 4 },
   harmony: { name: 'vibraphone', lo: 2, hi: 6 },
   // The player's own instrument on the shield keys: a big layered synth.
@@ -83,6 +85,7 @@ export class Music {
     this.ready = false;
     this.timer = 0;
     this.events = [];
+    this.muted = [false, false, false];   // a fallen cannon's instrument drops out
   }
 
   // Call on page load. The context starts suspended until start() runs in a tap.
@@ -115,7 +118,7 @@ export class Music {
   async loadAll() {
     const c = this.ctx, k = LOADOUT.kit;
     this.kit = {};
-    await Promise.all(['kick', 'snare', 'hat', 'openHat', 'clap'].map(async n => {
+    await Promise.all(Object.keys(k).filter(n => n !== 'dir').map(async n => {
       try { this.kit[n] = await load(c, `audio/drums/${k.dir}/${k[n]}.wav`); } catch { /* play without it */ }
     }));
     const keyNames = [...new Set(LOADOUT.keys.layers.map(l => l.name))];
@@ -170,17 +173,20 @@ export class Music {
   playStep(n, t) {
     const s = n % BAR;
     const chord = CHORDS[Math.floor(n / BAR) % CHORDS.length];
-    let drum = null;
-    if (KICK[s] === 'x') { this.hit('kick', t, 1); drum = 'kick'; }
-    if (SNARE[s] === 'x') { this.hit('snare', t, 0.8); this.hit('clap', t, 0.35); drum = drum || 'snare'; }
-    if (HAT[s] === 'x') { this.hit('hat', t, 0.35); drum = drum || 'hat'; }
-    if (HAT[s] === 'o') { this.hit('openHat', t, 0.3); drum = drum || 'hat'; }
-    if (drum) this.events.push({ time: t, weapon: 0, kind: drum });
-    for (const [st, semi] of BASS) if (st === s) {
+    const [mDrum, mBass, mHarm] = this.muted;
+    if (!mDrum) {
+      let drum = null;
+      if (KICK[s] === 'x') { this.hit('kick', t, 1); drum = 'kick'; }
+      if (SNARE[s] === 'x') { this.hit('snare', t, 0.8); this.hit('clap', t, 0.35); drum = drum || 'snare'; }
+      if (HAT[s] === 'x') { this.hit('hat', t, 0.35); drum = drum || 'hat'; }
+      if (HAT[s] === 'o') { this.hit('openHat', t, 0.3); drum = drum || 'hat'; }
+      if (drum) this.events.push({ time: t, weapon: 0, kind: drum });
+    }
+    if (!mBass) for (const [st, semi] of BASS) if (st === s) {
       this.note(this.bass, chord.bass + semi, t, 0.85, STEP * 1.6);
       this.events.push({ time: t, weapon: 1, kind: 'bass' });
     }
-    for (const [st, tone] of ARP) if (st === s) {
+    if (!mHarm) for (const [st, tone] of ARP) if (st === s) {
       this.note(this.harmony, chord.triad[tone] + 12, t, 0.5, 0.7);
       this.events.push({ time: t, weapon: 2, kind: 'arp' });
     }
@@ -193,6 +199,15 @@ export class Music {
     while (i < this.events.length && this.events[i].time <= now) i++;
     return i ? this.events.splice(0, i).filter(e => now - e.time < 0.25) : [];
   }
+
+  // Context time of 16th-note step n (step 0 is when the music started).
+  stepTime(n) { return this.t0 + n * STEP; }
+
+  // Step that is audible right now.
+  stepNow() { return Math.floor((this.heard() - this.t0) / STEP); }
+
+  // One-off sound effect, right now.
+  sfx(name, vol) { if (this.running) this.play(this.kit[name], this.ctx.currentTime, 1, vol, 0); }
 
   chordNow() {
     const n = Math.max(0, Math.floor((this.heard() - this.t0) / STEP));

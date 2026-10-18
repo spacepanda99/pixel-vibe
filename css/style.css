@@ -57,7 +57,7 @@ h1 {
   text-shadow: 4px 4px 0 var(--vibe), -4px -4px 0 var(--bass);
 }
 
-#startBtn {
+#startBtn, #againBtn {
   font: inherit;
   font-size: 14px;
   padding: 16px 20px;
@@ -67,6 +67,23 @@ h1 {
   cursor: pointer;
   animation: blink 1s steps(2) infinite;
 }
+
+h2 { margin: 0; font-size: clamp(20px, 7vw, 32px); font-weight: 400; text-shadow: 3px 3px 0 var(--vibe), -3px -3px 0 var(--bass); }
+
+#banner {
+  position: fixed;
+  top: 32%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink);
+  text-shadow: 2px 2px 0 var(--vibe);
+  opacity: 0;
+  pointer-events: none;
+}
+#banner.show { animation: banner 2.4s steps(12) forwards; }
+@keyframes banner { 0%, 100% { opacity: 0; } 10%, 85% { opacity: 1; } }
 #startBtn:disabled { border-color: #3a4270; animation: none; cursor: wait; }
 
 .hint { margin: 0; font-size: 9px; line-height: 2; opacity: 0.8; }
@@ -84,5 +101,5 @@ h1 {
 @keyframes blink { 50% { border-color: transparent; } }
 
 @media (prefers-reduced-motion: reduce) {
-  #startBtn { animation: none; }
+  #startBtn, #againBtn { animation: none; }
 }

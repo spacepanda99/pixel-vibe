@@ -1,6 +1,8 @@
-// Pixel Vibe game screen: three cannons that fire on their instrument's notes,
-// three piano keys that raise a shield over each cannon, and drag-to-aim.
-import { Music } from './audio.js?v=0.2.0';
+// Pixel Vibe game: three cannons on block foundations fire on their
+// instrument's notes. Enemy ships park and shoot the blocks; shield keys block
+// shots. After the wave a boss fires down at each cannon on a lead rhythm, so
+// blocking it in time plays the lead part on the keys.
+import { Music, STEP } from './audio.js?v=0.3.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -8,26 +10,60 @@ const TURRET_X = [30, 90, 150];
 const COLORS = ['#ff7a3d', '#37e0ff', '#ff4fd8'];   // drums, bass, vibraphone
 const AIM_LIMIT = 1.25;              // radians either side of straight up
 const BARREL = 13;
+const SHIELD_R = 19;
+
+// Foundations: tiny 2px blocks, narrower at the top like a plinth.
+const BLOCK = 2, F_COLS = 19, F_ROWS = 10;
+const LOST_AT = 0.3;                 // a cannon falls when its blocks drop below 30%
+const halfWidth = r => Math.min(9, 6 + r);
 
 const SHOT = {
-  kick:  { speed: 150, trail: 6 },
-  snare: { speed: 190, trail: 8 },
-  hat:   { speed: 260, trail: 4 },
-  bass:  { speed: 125, trail: 12 },
-  arp:   { speed: 210, trail: 7 },
+  kick:  { speed: 150, trail: 6, dmg: 3 },
+  snare: { speed: 190, trail: 8, dmg: 2 },
+  hat:   { speed: 260, trail: 4, dmg: 1 },
+  bass:  { speed: 125, trail: 12, dmg: 2 },
+  arp:   { speed: 210, trail: 7, dmg: 1 },
 };
+
+// Shield energy: drains while held, refills when let go, so shields are for timing, not camping.
+const SHIELD_DRAIN = 1 / 1.6, SHIELD_REFILL = 1 / 2.5;
+
+// Enemy wave
+const WAVE_SIZE = 8, ENEMY_HP = 60, SPAWN_GAP = 3.5, ENEMY_SHOT_SPEED = 75;
+const SLOTS = [[34, 70], [90, 52], [146, 70], [62, 100], [118, 100]];
+const ENEMY_SPRITE = [
+  '....a...a....',
+  '.....a.a.....',
+  '...bbbbbbb...',
+  '..bbcbbbcbb..',
+  '.bbbbbbbbbbb.',
+  '.b.bbbbbbb.b.',
+  '.b.b.....b.b.',
+  '....bb.bb....',
+];
+const ENEMY_COLORS = ['#7cff5b', '#ff5b5b', '#c18bff', '#ffd23d'];
+
+// Boss: fires from the port above each cannon. Each digit is the cannon its
+// shot lands on, on that 16th step (two bars, looping). Blocking every shot
+// as it lands plays this rhythm on the keys: the lead part.
+const BOSS_HP = 700, BOSS_Y = 34, BOSS_SHOT_SPEED = 110;
+const BOSS_PATTERN = '0..1..2.1.0.2.1.' + '2.1.0..1.2.1.0..';
 
 const canvas = document.getElementById('screen');
 const g = canvas.getContext('2d');
 const music = new Music();
+const bannerEl = document.getElementById('banner');
+const endEl = document.getElementById('end');
 
-let H = 320, keyTop = 280, turretY = 254;
-const weapons = TURRET_X.map((x, i) => ({ x, color: COLORS[i], angle: 0, recoil: 0, flash: 0 }));
-const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice: null }));
-let shots = [];
-let sparks = [];
-let stars = [];
-let pulse = 0;
+let H = 320, keyTop = 280, turretY = 246, foundTop = 258;
+const weapons = TURRET_X.map((x, i) => ({ x, color: COLORS[i], angle: 0, recoil: 0, flash: 0, dead: false }));
+const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice: null, energy: 1 }));
+let foundations = [];
+let shots = [], enemyShots = [], bossShots = [], sparks = [], stars = [];
+let enemies = [], boss = null;
+let state = 'title';                 // title, wave, bossIntro, boss, over, clear
+let spawned = 0, killed = 0, spawnTimer = 0, stateTimer = 0, lastStep = -1;
+let pulse = 0, shake = 0;
 
 function resize() {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -35,7 +71,8 @@ function resize() {
   canvas.width = W;
   canvas.height = H;
   keyTop = H - KEY_H;
-  turretY = keyTop - 26;
+  turretY = keyTop - 34;
+  foundTop = turretY + 12;
   let s = Math.min(vw / W, vh / H);
   const si = Math.floor(s);
   if (si >= 1 && si / s > 0.85) s = si;   // whole-number scale keeps pixels even when it costs little
@@ -44,7 +81,52 @@ function resize() {
   stars = Array.from({ length: 70 }, () => ({ x: Math.random() * W, y: Math.random() * H, v: 4 + Math.random() * 26 }));
 }
 
-// ---------- firing ----------
+function buildFoundations() {
+  foundations = TURRET_X.map(() => {
+    const alive = new Uint8Array(F_COLS * F_ROWS);
+    let total = 0;
+    for (let r = 0; r < F_ROWS; r++) {
+      for (let c = 0; c < F_COLS; c++) if (Math.abs(c - 9) <= halfWidth(r)) { alive[r * F_COLS + c] = 1; total++; }
+    }
+    return { alive, total, count: total };
+  });
+}
+
+function reset() {
+  buildFoundations();
+  weapons.forEach(w => { w.dead = false; w.angle = 0; });
+  shields.forEach(s => { s.energy = 1; });
+  music.muted = [false, false, false];
+  shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null;
+  spawned = 0; killed = 0; spawnTimer = 1; lastStep = -1;
+  endEl.hidden = true;
+  state = 'wave';
+  banner('WAVE 1');
+}
+
+function banner(text) {
+  bannerEl.textContent = text;
+  bannerEl.classList.remove('show');
+  void bannerEl.offsetWidth;          // restart the CSS animation
+  bannerEl.classList.add('show');
+}
+
+function endGame(won) {
+  state = won ? 'clear' : 'over';
+  endEl.querySelector('h2').textContent = won ? 'STAGE CLEAR' : 'GAME OVER';
+  endEl.hidden = false;
+}
+
+// ---------- particles ----------
+
+function burst(x, y, color, n, speed, life = 0.35) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, v = speed * (0.3 + Math.random() * 0.7);
+    sparks.push({ x, y, color, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: life * (0.5 + Math.random() * 0.5) });
+  }
+}
+
+// ---------- cannons ----------
 
 function muzzle(w) {
   return { x: w.x + Math.sin(w.angle) * BARREL, y: turretY - Math.cos(w.angle) * BARREL };
@@ -52,6 +134,7 @@ function muzzle(w) {
 
 function fire(ev) {
   const w = weapons[ev.weapon];
+  if (w.dead) return;
   w.recoil = 1;
   w.flash = 1;
   if (ev.kind === 'kick') pulse = 1;
@@ -60,33 +143,251 @@ function fire(ev) {
   const m = muzzle(w);
   const color = ev.kind === 'snare' ? '#ffd23d' : ev.kind === 'hat' ? '#ffe2cc' : w.color;
   shots.push({ x: m.x, y: m.y, vx: Math.sin(a) * spec.speed, vy: -Math.cos(a) * spec.speed,
-    kind: ev.kind, color, trail: spec.trail });
+    kind: ev.kind, color, trail: spec.trail, dmg: spec.dmg });
   for (let i = 0; i < 4; i++) {
     sparks.push({ x: m.x, y: m.y, color: w.color, life: 0.12 + Math.random() * 0.1,
       vx: (Math.random() - 0.5) * 60 + Math.sin(a) * 30, vy: (Math.random() - 0.5) * 60 - Math.cos(a) * 30 });
   }
 }
 
+function killTurret(i) {
+  const w = weapons[i];
+  if (w.dead) return;
+  w.dead = true;
+  music.muted[i] = true;                 // its instrument drops out of the song
+  burst(w.x, turretY, w.color, 40, 90, 0.6);
+  burst(w.x, turretY, '#ffffff', 15, 60, 0.4);
+  music.sfx('boom', 1);
+  music.sfx('crash', 0.5);
+  shake = 0.4;
+  if (weapons.every(x => x.dead)) endGame(false);
+}
+
+// ---------- foundations ----------
+
+function blockX(i, c) { return TURRET_X[i] - 19 + c * BLOCK; }
+
+// A shot at (x, y) moving down: if it has reached a live block in its column,
+// blow a ragged hole there and return true.
+function hitFoundation(x, y, radius) {
+  if (y < foundTop) return false;
+  for (let i = 0; i < 3; i++) {
+    const c = Math.floor((x - (TURRET_X[i] - 19)) / BLOCK);
+    if (c < 0 || c >= F_COLS) continue;
+    const f = foundations[i];
+    const maxR = Math.min(F_ROWS - 1, Math.floor((y - foundTop) / BLOCK));
+    for (let r = 0; r <= maxR; r++) {
+      if (!f.alive[r * F_COLS + c]) continue;
+      for (let dr = -radius; dr <= radius; dr++) {
+        for (let dc = -radius; dc <= radius; dc++) {
+          const rr = r + dr, cc = c + dc, d = Math.abs(dr) + Math.abs(dc);
+          if (rr < 0 || rr >= F_ROWS || cc < 0 || cc >= F_COLS || d > radius) continue;
+          if (d > 0 && Math.random() > 0.65) continue;
+          const k = rr * F_COLS + cc;
+          if (f.alive[k]) { f.alive[k] = 0; f.count--; }
+        }
+      }
+      burst(blockX(i, c) + 1, foundTop + r * BLOCK, '#8a95c8', 6, 50, 0.3);
+      music.sfx('crumble', 0.18);
+      if (f.count < f.total * LOST_AT) killTurret(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Is an enemy shot at (x, y) inside a raised shield? Then it's blocked.
+function shieldBlocks(x, y) {
+  for (let i = 0; i < 3; i++) {
+    const s = shields[i];
+    if (s.level < 0.5) continue;
+    const cx = TURRET_X[i], cy = turretY + 6;
+    if (y <= cy + 1 && Math.hypot(x - cx, y - cy) <= SHIELD_R + 1) {
+      burst(x, y, s.color, 10, 70, 0.3);
+      s.flash = Math.max(s.flash, 0.6);
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------- enemies ----------
+
+function spawnEnemy() {
+  const taken = new Set(enemies.map(e => e.slot));
+  const free = SLOTS.map((_, i) => i).filter(i => !taken.has(i));
+  if (!free.length) return false;
+  const slot = free[Math.floor(Math.random() * free.length)];
+  const left = Math.random() < 0.5;
+  enemies.push({
+    slot, t: 0, x: left ? -10 : W + 10, y: -10,
+    from: { x: left ? -10 : W + 10, y: -10 },
+    ctrl: { x: W / 2 + (Math.random() - 0.5) * 100, y: 150 + Math.random() * 40 },
+    hp: ENEMY_HP, flash: 0, color: ENEMY_COLORS[spawned % ENEMY_COLORS.length],
+    period: 8, phase: 2 * Math.floor(Math.random() * 4), bob: Math.random() * 6,
+  });
+  spawned++;
+  return true;
+}
+
+function enemyFire(e) {
+  const alive = [0, 1, 2].filter(i => !weapons[i].dead);
+  if (!alive.length) return;
+  const i = alive[Math.floor(Math.random() * alive.length)];
+  const tx = TURRET_X[i] + (Math.random() - 0.5) * 24, ty = foundTop;
+  const dx = tx - e.x, dy = ty - (e.y + 5), d = Math.hypot(dx, dy);
+  enemyShots.push({ x: e.x, y: e.y + 5, vx: dx / d * ENEMY_SHOT_SPEED, vy: dy / d * ENEMY_SHOT_SPEED });
+}
+
+function killEnemy(e) {
+  burst(e.x, e.y, e.color, 30, 80, 0.5);
+  burst(e.x, e.y, '#ffffff', 10, 50, 0.3);
+  music.sfx('boom', 0.6);
+  killed++;
+}
+
+// ---------- boss ----------
+
+function bossShotTop() { return turretY + 6 - SHIELD_R; }   // where a boss shot meets the dome
+
+function updateBoss(dt) {
+  const b = boss;
+  b.flash = Math.max(0, b.flash - dt);
+  if (b.y < BOSS_Y) {
+    b.y = Math.min(BOSS_Y, b.y + 18 * dt);
+    if (b.y === BOSS_Y) {
+      // Start firing two bars after it settles, on a bar line.
+      b.startStep = (Math.floor(music.stepNow() / 16) + 2) * 16;
+      b.nextStep = b.startStep;
+    }
+    return;
+  }
+  // Launch each shot early enough that it reaches the shield exactly on its step.
+  const now = music.heard();
+  const y0 = b.y + 19, travel = (bossShotTop() - y0) / BOSS_SHOT_SPEED;
+  while (music.stepTime(b.nextStep) - travel <= now) {
+    const ch = BOSS_PATTERN[(b.nextStep - b.startStep) % BOSS_PATTERN.length];
+    if (ch !== '.') {
+      const port = +ch;
+      if (!weapons[port].dead) {
+        const arrive = music.stepTime(b.nextStep);
+        // A little sideways scatter so unblocked shots wear the whole foundation down, not one narrow hole.
+        const x = TURRET_X[port] + Math.round((Math.random() - 0.5) * 10);
+        bossShots.push({ port, x, y0, y: y0, launch: arrive - travel });
+        b.portFlash[port] = 1;
+      }
+    }
+    b.nextStep++;
+  }
+  for (let i = 0; i < 3; i++) b.portFlash[i] = Math.max(0, b.portFlash[i] - dt * 4);
+  // Positions come from the audio clock, so the shots stay locked to the beat.
+  for (const s of bossShots) s.y = s.y0 + (now - s.launch) * BOSS_SHOT_SPEED;
+  bossShots = bossShots.filter(s => {
+    if (shieldBlocks(s.x, s.y)) return false;
+    if (hitFoundation(s.x, s.y, 2)) return false;
+    return s.y < keyTop;
+  });
+}
+
 // ---------- update ----------
 
+function onStep(n) {
+  if (state !== 'wave') return;
+  for (const e of enemies) if (e.t >= 1 && n % e.period === e.phase) enemyFire(e);
+}
+
 function update(dt) {
-  if (music.running) for (const ev of music.drain()) fire(ev);
+  if (music.running) {
+    for (const ev of music.drain()) fire(ev);
+    const n = music.stepNow();
+    if (lastStep < 0 || n - lastStep > 16) lastStep = n - 1;
+    while (lastStep < n) onStep(++lastStep);
+  }
+  const t = performance.now() / 1000;
   for (const w of weapons) {
     w.recoil = Math.max(0, w.recoil - dt * 8);
     w.flash = Math.max(0, w.flash - dt * 6);
   }
-  for (const s of shields) {
-    const target = s.down > 0 ? 1 : 0;
+  shields.forEach((s, i) => {
+    const want = s.down > 0 && !weapons[i].dead;
+    if (want) s.energy = Math.max(0, s.energy - dt * SHIELD_DRAIN);
+    else s.energy = Math.min(1, s.energy + dt * SHIELD_REFILL);
+    const target = want && s.energy > 0 ? 1 : 0;
     s.level += (target - s.level) * Math.min(1, dt * (target ? 25 : 10));
     s.flash = Math.max(0, s.flash - dt * 4);
-  }
+  });
   pulse = Math.max(0, pulse - dt * 5);
+  shake = Math.max(0, shake - dt);
   for (const st of stars) {
     st.y += st.v * dt * (1 + pulse * 2);
     if (st.y > keyTop) { st.y -= keyTop; st.x = Math.random() * W; }
   }
+
+  // Director
+  if (state === 'wave') {
+    spawnTimer -= dt;
+    if (spawned < WAVE_SIZE && spawnTimer <= 0 && spawnEnemy()) spawnTimer = SPAWN_GAP;
+    if (killed >= WAVE_SIZE) { state = 'bossIntro'; stateTimer = 3; banner('WARNING: BOSS'); }
+  } else if (state === 'bossIntro') {
+    stateTimer -= dt;
+    if (stateTimer <= 0) {
+      state = 'boss';
+      boss = { x: W / 2, y: -30, hp: BOSS_HP, flash: 0, portFlash: [0, 0, 0], startStep: 0, nextStep: 0 };
+    }
+  }
+
+  // Enemies fly in on a curve, then hover in their slot.
+  for (const e of enemies) {
+    const [sx, sy] = SLOTS[e.slot];
+    e.flash = Math.max(0, e.flash - dt);
+    if (e.t < 1) {
+      e.t = Math.min(1, e.t + dt / 2.2);
+      const u = e.t * e.t * (3 - 2 * e.t), v = 1 - u;
+      e.x = v * v * e.from.x + 2 * v * u * e.ctrl.x + u * u * sx;
+      e.y = v * v * e.from.y + 2 * v * u * e.ctrl.y + u * u * sy;
+    } else {
+      e.x = sx + Math.sin(t * 1.5 + e.bob) * 3;
+      e.y = sy + Math.sin(t * 2.1 + e.bob) * 1.5;
+    }
+  }
+  if (boss && state === 'boss') updateBoss(dt);
+
+  // Player shots vs ships
   for (const s of shots) { s.x += s.vx * dt; s.y += s.vy * dt; }
-  shots = shots.filter(s => s.y > -12 && s.x > -12 && s.x < W + 12);
+  shots = shots.filter(s => {
+    if (s.y < -12 || s.x < -12 || s.x > W + 12) return false;
+    for (const e of enemies) {
+      if (e.hp > 0 && Math.abs(s.x - e.x) <= 8 && Math.abs(s.y - e.y) <= 6) {
+        e.hp -= s.dmg;
+        e.flash = 0.06;
+        burst(s.x, s.y, s.color, 3, 40, 0.15);
+        if (e.hp <= 0) killEnemy(e);
+        return false;
+      }
+    }
+    if (boss && boss.hp > 0 && s.x >= boss.x - 70 && s.x <= boss.x + 70 && s.y >= boss.y - 12 && s.y <= boss.y + 18) {
+      boss.hp -= s.dmg;
+      boss.flash = 0.05;
+      burst(s.x, s.y, s.color, 3, 40, 0.15);
+      if (boss.hp <= 0) {
+        for (let k = 0; k < 6; k++) burst(boss.x + (Math.random() - 0.5) * 120, boss.y + Math.random() * 16, ENEMY_COLORS[k % 4], 25, 100, 0.8);
+        music.sfx('boom', 1);
+        music.sfx('crash', 0.8);
+        shake = 0.6;
+        boss = null;
+        bossShots = [];
+        endGame(true);
+      }
+      return false;
+    }
+    return true;
+  });
+  enemies = enemies.filter(e => e.hp > 0);
+
+  // Enemy shots vs shields and blocks (never the cannons themselves)
+  for (const s of enemyShots) { s.x += s.vx * dt; s.y += s.vy * dt; }
+  enemyShots = enemyShots.filter(s => !shieldBlocks(s.x, s.y) && !hitFoundation(s.x, s.y, 1) && s.y < keyTop);
+
   for (const p of sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
   sparks = sparks.filter(p => p.life > 0);
 }
@@ -102,6 +403,16 @@ function disc(cx, cy, r) {
   }
 }
 
+function sprite(map, x, y, colors) {
+  const x0 = Math.round(x - map[0].length / 2), y0 = Math.round(y - map.length / 2);
+  for (let r = 0; r < map.length; r++) {
+    for (let c = 0; c < map[r].length; c++) {
+      const col = colors[map[r][c]];
+      if (col) { g.fillStyle = col; g.fillRect(x0 + c, y0 + r, 1, 1); }
+    }
+  }
+}
+
 function drawBackground() {
   g.fillStyle = '#05060c';
   g.fillRect(0, 0, W, H);
@@ -109,20 +420,66 @@ function drawBackground() {
     g.fillStyle = st.v > 20 ? '#c8d0ff' : st.v > 12 ? '#6a73a8' : '#353a5c';
     px(st.x, st.y, 1, st.v > 24 ? 2 : 1);
   }
-  const deckTop = turretY + 12;
-  g.fillStyle = '#0d1020';
-  g.fillRect(0, deckTop, W, keyTop - deckTop);
+  // Ground line the foundations stand on, with a beat light
   g.fillStyle = '#2a3156';
-  g.fillRect(0, deckTop, W, 1);
-  g.fillStyle = '#161b34';
-  for (let x = 4; x < W; x += 8) g.fillRect(x, deckTop + 3, 4, 1);
-  // Beat light along the deck edge
+  g.fillRect(0, keyTop - 1, W, 1);
   if (pulse > 0) {
     g.globalAlpha = pulse * 0.8;
     g.fillStyle = COLORS[0];
-    g.fillRect(0, deckTop, W, 1);
+    g.fillRect(0, keyTop - 1, W, 1);
     g.globalAlpha = 1;
   }
+}
+
+function drawFoundations() {
+  foundations.forEach((f, i) => {
+    for (let r = 0; r < F_ROWS; r++) {
+      for (let c = 0; c < F_COLS; c++) {
+        if (!f.alive[r * F_COLS + c]) continue;
+        const x = blockX(i, c), y = foundTop + r * BLOCK;
+        g.fillStyle = (r + c) & 1 ? '#3d4570' : '#465080';
+        g.fillRect(x, y, BLOCK, BLOCK);
+        g.fillStyle = r === 0 || !f.alive[(r - 1) * F_COLS + c] ? '#7c88c4' : '#58629a';
+        g.fillRect(x, y, 1, 1);
+      }
+    }
+  });
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const body = e.flash > 0 ? '#ffffff' : e.color;
+    sprite(ENEMY_SPRITE, e.x, e.y, { a: '#ffd23d', b: body, c: '#05060c' });
+  }
+  if (!boss) return;
+  const b = boss, x0 = Math.round(b.x - 70), y = Math.round(b.y);
+  const hull = b.flash > 0 ? '#ffffff' : '#5a1f6e', dome = b.flash > 0 ? '#ffffff' : '#7a2b94';
+  g.fillStyle = hull;
+  g.fillRect(x0 + 4, y, 132, 12);
+  g.fillRect(x0, y + 3, 140, 6);
+  g.fillStyle = dome;
+  g.fillRect(x0 + 40, y - 8, 60, 8);
+  g.fillRect(x0 + 50, y - 12, 40, 4);
+  g.fillStyle = '#ffd23d';
+  g.globalAlpha = 0.6 + pulse * 0.4;
+  g.fillRect(x0 + 62, y - 7, 16, 3);
+  g.globalAlpha = 1;
+  g.fillStyle = '#3a1247';
+  for (let k = 0; k < 132; k += 6) g.fillRect(x0 + 4 + k, y + 10, 3, 1);
+  for (let i = 0; i < 3; i++) {
+    const px0 = TURRET_X[i];
+    g.fillStyle = '#2b0f36';
+    g.fillRect(px0 - 5, y + 12, 10, 6);
+    g.fillStyle = COLORS[i];
+    g.globalAlpha = 0.35 + b.portFlash[i] * 0.65;
+    g.fillRect(px0 - 3, y + 15, 6, 3);
+    g.globalAlpha = 1;
+  }
+  // Health bar
+  g.fillStyle = '#2a1030';
+  g.fillRect(5, 3, W - 10, 3);
+  g.fillStyle = '#ff4f6d';
+  g.fillRect(5, 3, Math.ceil((W - 10) * Math.max(0, b.hp) / BOSS_HP), 3);
 }
 
 function drawShots() {
@@ -153,6 +510,24 @@ function drawShots() {
       g.fillRect(x, y, 1, 2);
     }
   }
+  for (const s of enemyShots) {
+    g.fillStyle = '#ff5b5b';
+    px(s.x - 1, s.y - 1, 2, 3);
+    g.fillStyle = '#ffd23d';
+    px(s.x - 1, s.y, 1, 1);
+  }
+  // Boss shots wear the colour of the key that blocks them.
+  for (const s of bossShots) {
+    g.fillStyle = COLORS[s.port];
+    for (let k = 1; k <= 6; k++) {
+      g.globalAlpha = (1 - k / 7) * 0.6;
+      px(s.x - 1, s.y - 3 - k * 2, 3, 2);
+    }
+    g.globalAlpha = 1;
+    px(s.x - 2, s.y - 3, 5, 6);
+    g.fillStyle = '#ffffff';
+    px(s.x - 1, s.y - 2, 3, 4);
+  }
   for (const p of sparks) {
     g.globalAlpha = Math.min(1, p.life * 6);
     g.fillStyle = p.color;
@@ -165,12 +540,19 @@ function drawWeapon(w) {
   const x = w.x, y = turretY;
   // Mount
   g.fillStyle = '#1c2140';
-  g.fillRect(x - 14, y + 5, 28, 7);
+  g.fillRect(x - 11, y + 5, 22, 7);
   g.fillStyle = '#3a4270';
-  g.fillRect(x - 14, y + 5, 28, 1);
+  g.fillRect(x - 11, y + 5, 22, 1);
+  if (w.dead) {
+    // Wreck: dark, barrel gone, smoke
+    g.fillStyle = '#23263a';
+    disc(x, y + 3, 6);
+    if (Math.random() < 0.3) sparks.push({ x: x + (Math.random() - 0.5) * 6, y: y, color: '#4a4f66', vx: (Math.random() - 0.5) * 6, vy: -12 - Math.random() * 10, life: 0.8 });
+    return;
+  }
   g.fillStyle = w.flash > 0.3 ? w.color : '#262c52';
-  g.fillRect(x - 12, y + 8, 3, 2);
-  g.fillRect(x + 10, y + 8, 3, 2);
+  g.fillRect(x - 9, y + 8, 3, 2);
+  g.fillRect(x + 7, y + 8, 3, 2);
   // Barrel (drawn before the body so the body covers its base)
   const len = BARREL - w.recoil * 3;
   const sx = Math.sin(w.angle), sy = -Math.cos(w.angle);
@@ -197,7 +579,7 @@ function drawWeapon(w) {
 
 function drawShield(s, i) {
   if (s.level < 0.02) return;
-  const cx = TURRET_X[i], cy = turretY + 6, r = 19;
+  const cx = TURRET_X[i], cy = turretY + 6, r = SHIELD_R;
   const t = performance.now() / 1000;
   g.fillStyle = s.color;
   // Dithered dome fill
@@ -216,7 +598,7 @@ function drawShield(s, i) {
   for (let a = Math.PI; a <= Math.PI * 2 + 0.001; a += 0.04) {
     px(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
   }
-  // Ring flash when the key goes down
+  // Ring flash when the key goes down or a shot is blocked
   if (s.flash > 0) {
     const rr = r + (1 - s.flash) * 10;
     g.globalAlpha = s.flash;
@@ -250,15 +632,26 @@ function drawKeys() {
       g.globalAlpha = 0.25 + 0.1 * s.flash;
       g.fillRect(x0 + 2, faceY + 2, w - 4, faceH - 4);
     }
+    // Shield energy
+    g.globalAlpha = 0.5;
+    g.fillStyle = '#000';
+    g.fillRect(x0 + 4, faceY + faceH - 5, w - 8, 2);
     g.globalAlpha = 1;
+    g.fillStyle = s.energy < 0.2 ? '#ff3b3b' : '#ffffff';
+    g.fillRect(x0 + 4, faceY + faceH - 5, Math.round((w - 8) * s.energy), 2);
   }
 }
 
 function draw() {
+  g.save();
+  if (shake > 0) g.translate(Math.round((Math.random() - 0.5) * shake * 8), Math.round((Math.random() - 0.5) * shake * 8));
   drawBackground();
+  drawEnemies();
   drawShots();
+  drawFoundations();
   weapons.forEach(drawWeapon);
   shields.forEach(drawShield);
+  g.restore();
   drawKeys();
 }
 
@@ -375,7 +768,9 @@ startEl.addEventListener('click', () => {
   if (!music.ready) return;
   music.start();
   startEl.hidden = true;
+  reset();
 });
+document.getElementById('againBtn').addEventListener('click', reset);
 
 let last = performance.now();
 function frame(now) {
@@ -390,10 +785,16 @@ function frame(now) {
 
 addEventListener('resize', resize);
 resize();
+buildFoundations();
 requestAnimationFrame(frame);
 
 // Offline play and "Install app" support.
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-// Read-only hooks for headless checks.
-window.__pv = { weapons, shields, get shots() { return shots.length; }, music };
+// Hooks for headless checks.
+window.__pv = {
+  weapons, shields, music,
+  get state() { return state; },
+  get counts() { return { shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { y: boss.y, hp: boss.hp } }; },
+  skipToBoss() { enemies = []; enemyShots = []; spawned = killed = WAVE_SIZE; },
+};
