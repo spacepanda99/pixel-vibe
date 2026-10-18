@@ -10,7 +10,7 @@ This is a brand-new project, separate from GabLab (`C:\Mikes Stuff\call-recorder
 - **Pixel look:** low-res canvas (e.g. 224x288 or 320x180) scaled up with `image-rendering: pixelated`, chunky sprites drawn in code or small PNGs, limited palette, CRT/scanline option is a nice extra.
 - **Sound:** synthesize drums and chiptune with Web Audio (oscillators and noise), so there are no audio files to license. Keep one shared master clock and a BPM so everything lands on the grid.
 - **Controls:** touch first (drag to move, tap/hold to fire), keyboard second.
-- **Hosting:** GitHub Pages, same pattern as GabLab (static files, `?v=` cache-busting on scripts, a version number in the footer, a service worker for install/offline). Do not create the GitHub repo until the user says so.
+- **Hosting:** GitHub Pages, same pattern as GabLab (static files, `?v=` cache-busting on scripts, a version number in the footer, a service worker for install/offline). Repo: `spacepanda99/pixel-vibe` (public, so free Pages works), created 2026-10-18.
 
 ## Working rules (from the user)
 - Keep answers to the user very brief.
