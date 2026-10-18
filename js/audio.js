@@ -95,7 +95,12 @@ export class Music {
     this.out = this.ctx.createGain();
     this.out.gain.value = 0.8;
     const comp = this.ctx.createDynamicsCompressor();
-    this.out.connect(comp).connect(this.ctx.destination);
+    // Analyser on the final mix feeds the on-screen EQ meter and the shot waveforms.
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 1024;
+    this.analyser.smoothingTimeConstant = 0.55;
+    this.spectrum = new Uint8Array(this.analyser.frequencyBinCount);
+    this.out.connect(comp).connect(this.analyser).connect(this.ctx.destination);
     // Key bus: dry plus a dotted-8th echo that stays darker than the dry sound.
     const c = this.ctx;
     this.keyBus = c.createGain();
@@ -207,6 +212,9 @@ export class Music {
     while (i < this.events.length && this.events[i].time <= now) i++;
     return i ? this.events.splice(0, i).filter(e => now - e.time < 0.25) : [];
   }
+
+  // Fill this.spectrum (0-255 per frequency bin) with what's playing now.
+  readSpectrum() { if (this.analyser) this.analyser.getByteFrequencyData(this.spectrum); return this.spectrum; }
 
   // Context time of 16th-note step n (step 0 is when the music started).
   stepTime(n) { return this.t0 + n * STEP; }

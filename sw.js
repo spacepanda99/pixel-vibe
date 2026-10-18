@@ -1,7 +1,7 @@
 // Pixel Vibe service worker: makes the game installable and playable offline.
 // Code is network-first (updates show up on the next launch); samples are
 // cache-first because a sample's content never changes under the same name.
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
 const CODE_CACHE = 'pv-code-' + VERSION;
 const AUDIO_CACHE = 'pv-audio-1';
 const CORE = ['./', 'index.html', `css/style.css?v=${VERSION}`, `js/game.js?v=${VERSION}`, `js/audio.js?v=${VERSION}`,

@@ -2,7 +2,7 @@
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
 // shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
 // so blocking it in time plays the lead part. Beat three bosses to clear the level.
-import { Music, STEP } from './audio.js?v=0.7.0';
+import { Music, STEP } from './audio.js?v=0.8.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -23,6 +23,16 @@ const SHOT = {
   hat:   { speed: 260, trail: 4, dmg: 1 },
   bass:  { speed: 125, trail: 12, dmg: 2 },
   arp:   { speed: 210, trail: 7, dmg: 1 },
+};
+
+// How each instrument's shots are drawn: a short waveform trailing behind the
+// shot. len = length in px, wl = wavelength, band = which part of the mix makes it swell.
+const WAVES = {
+  kick:  { len: 9,  wl: 9,  amp: 2.5, thick: 2, band: 'low',  shape: p => Math.sin(p) },
+  snare: { len: 10, wl: 3,  amp: 2,   thick: 1, band: 'mid',  shape: () => Math.random() * 2 - 1 },
+  hat:   { len: 5,  wl: 2,  amp: 1,   thick: 1, band: 'high', shape: () => Math.random() * 2 - 1 },
+  bass:  { len: 20, wl: 10, amp: 2.5, thick: 2, band: 'low',  shape: p => Math.sin(p) },
+  arp:   { len: 12, wl: 4,  amp: 1.5, thick: 1, band: 'high', shape: p => 2 / Math.PI * Math.asin(Math.sin(p)) },
 };
 
 // Shield energy: drains while held, refills when let go, so shields are for timing, not camping.
@@ -66,6 +76,14 @@ const BOSSES = [
 // it; when that target dies the cannon picks the next one near where it points.
 // Shots also curve gently toward their cannon's target.
 const LOCK_CONE = 0.6, HOMING = 5;    // radians; radians per second
+const TAP_RADIUS = 22;               // a tap this close to a ship targets that ship
+const HOLD_AIM = 1.5;                // seconds cannons hold a tapped empty spot before auto-aiming again
+
+// EQ meter: bars behind the action, log-spaced from 40 Hz to 12 kHz.
+const EQ_BARS = 24, EQ_LO = 40, EQ_HI = 12000;
+const eq = Array.from({ length: EQ_BARS }, () => ({ v: 0, peak: 0 }));
+let level = { low: 0, mid: 0, high: 0 };   // 0..1 loudness per band, drives the shot waveforms
+let ripples = [], tapMark = null;
 
 const canvas = document.getElementById('screen');
 const g = canvas.getContext('2d');
@@ -306,6 +324,8 @@ function enemyFire(e) {
   const tx = TURRET_X[i] + (Math.random() - 0.5) * 24, ty = foundTop;
   const dx = tx - e.x, dy = ty - (e.y + 9), d = Math.hypot(dx, dy);
   enemyShots.push({ x: e.x, y: e.y + 9, vx: dx / d * ENEMY_SHOT_SPEED, vy: dy / d * ENEMY_SHOT_SPEED });
+  // Silent "sound waves" rippling out under the ship as it drops a bomb
+  ripples.push({ x: e.x, y: e.y + 8, color: e.color, age: 0 });
 }
 
 function killEnemy(e) {
@@ -434,6 +454,10 @@ function update(dt) {
   });
   pulse = Math.max(0, pulse - dt * 5);
   shake = Math.max(0, shake - dt);
+  updateEq(dt);
+  for (const r of ripples) r.age += dt;
+  ripples = ripples.filter(r => r.age < 0.6);
+  if (tapMark) { tapMark.age += dt; if (tapMark.age > 0.5) tapMark = null; }
   for (const st of stars) {
     st.y += st.v * dt * (1 + pulse * 2);
     if (st.y > keyTop) { st.y -= keyTop; st.x = Math.random() * W; }
@@ -566,6 +590,65 @@ function sprite(map, x, y, colors, scale = 1) {
   }
 }
 
+function updateEq(dt) {
+  if (!music.analyser) return;
+  const spec = music.readSpectrum(), binHz = music.ctx.sampleRate / music.analyser.fftSize;
+  const band = (lo, hi) => {
+    let sum = 0, n = 0;
+    for (let i = Math.max(1, Math.floor(lo / binHz)); i <= Math.min(spec.length - 1, Math.ceil(hi / binHz)); i++) { sum += spec[i]; n++; }
+    return n ? sum / n / 255 : 0;
+  };
+  for (let b = 0; b < EQ_BARS; b++) {
+    const lo = EQ_LO * Math.pow(EQ_HI / EQ_LO, b / EQ_BARS), hi = EQ_LO * Math.pow(EQ_HI / EQ_LO, (b + 1) / EQ_BARS);
+    const v = Math.min(1, Math.pow(band(lo, hi), 2.2) * 1.3);
+    const bar = eq[b];
+    bar.v = v > bar.v ? v : Math.max(v, bar.v - dt * 2.5);        // fast up, quick fall
+    bar.peak = bar.v > bar.peak ? bar.v : Math.max(0, bar.peak - dt * 0.6);
+  }
+  level = { low: band(40, 200), mid: band(200, 2000), high: band(2000, 12000) };
+}
+
+// Bars rise from the ground behind everything: orange lows, cyan mids, pink highs.
+function drawEq() {
+  const bw = Math.floor(W / EQ_BARS), base = keyTop - 2, maxH = Math.round((keyTop - 40) * 0.7);
+  for (let b = 0; b < EQ_BARS; b++) {
+    const bar = eq[b], x = b * bw + 1;
+    const color = COLORS[b < 8 ? 0 : b < 16 ? 1 : 2];
+    const h = Math.round(bar.v * maxH);
+    g.fillStyle = color;
+    for (let y = 0; y < h; y += 3) {
+      g.globalAlpha = 0.08 + 0.2 * (y / maxH);
+      g.fillRect(x, base - y - 2, bw - 2, 2);
+    }
+    if (bar.peak > 0.02) {
+      g.globalAlpha = 0.55;
+      g.fillRect(x, base - Math.round(bar.peak * maxH) - 3, bw - 2, 1);
+    }
+  }
+  g.globalAlpha = 1;
+}
+
+function drawRipples() {
+  for (const r of ripples) {
+    for (let k = 0; k < 2; k++) {
+      const t = r.age / 0.6 - k * 0.25;
+      if (t <= 0 || t >= 1) continue;
+      const rad = 4 + t * 16;
+      g.fillStyle = r.color;
+      g.globalAlpha = (1 - t) * 0.8;
+      // Downward arcs, like a speaker cone pushing air
+      for (let a = 0.35; a <= Math.PI - 0.35; a += 0.12) px(r.x + Math.cos(a) * rad, r.y + Math.sin(a) * rad * 0.6);
+    }
+  }
+  if (tapMark) {
+    const t = tapMark.age / 0.5, rad = 3 + t * 6;
+    g.fillStyle = '#ffffff';
+    g.globalAlpha = 1 - t;
+    for (let a = 0; a < Math.PI * 2; a += 0.4) px(tapMark.x + Math.cos(a) * rad, tapMark.y + Math.sin(a) * rad);
+  }
+  g.globalAlpha = 1;
+}
+
 function drawBackground() {
   g.fillStyle = '#05060c';
   g.fillRect(0, 0, W, H);
@@ -691,7 +774,8 @@ function drawLocks() {
   for (const w of weapons) {
     if (w.dead || !alive(w.lock)) continue;
     const t = w.lock, big = enemies.includes(t);
-    const hw = big ? 15 : 7, hh = big ? 11 : 6, x = Math.round(t.x), y = Math.round(t.y);
+    const n = weapons.indexOf(w) * 2;   // nested so three cannons on one target all show
+    const hw = (big ? 15 : 7) + n, hh = (big ? 11 : 6) + n, x = Math.round(t.x), y = Math.round(t.y);
     g.fillStyle = w.color;
     g.globalAlpha = 0.85;
     for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
@@ -704,32 +788,23 @@ function drawLocks() {
 }
 
 function drawShots() {
+  // Player shots are little waveforms of their instrument, wiggling in time
+  // and swelling with how loud that part of the mix is right now.
+  const now = performance.now() / 1000;
   for (const s of shots) {
-    const sp = Math.hypot(s.vx, s.vy), ux = s.vx / sp, uy = s.vy / sp;
+    const sp = Math.hypot(s.vx, s.vy), ux = s.vx / sp, uy = s.vy / sp, nx = -uy, ny = ux;
+    const wave = WAVES[s.kind];
+    const amp = wave.amp * (0.6 + 1.2 * level[wave.band]);
     g.fillStyle = s.color;
-    const thick = s.kind === 'kick' || s.kind === 'bass' ? 2 : 1;
-    for (let k = s.trail; k >= 1; k--) {
-      g.globalAlpha = (1 - k / (s.trail + 1)) * 0.6;
-      px(s.x - ux * k * 1.5, s.y - uy * k * 1.5, thick, thick);
+    for (let t = 0; t <= wave.len; t++) {
+      const off = wave.shape(t / wave.wl * Math.PI * 2 - now * 18, s) * amp;
+      g.globalAlpha = 1 - (t / (wave.len + 1)) * 0.85;
+      const size = t < 2 ? wave.thick + 1 : wave.thick;
+      px(s.x - ux * t + nx * off - size / 2, s.y - uy * t + ny * off - size / 2, size, size);
     }
     g.globalAlpha = 1;
-    const x = Math.round(s.x), y = Math.round(s.y);
-    if (s.kind === 'kick') {
-      disc(x, y, 2);
-      g.fillStyle = '#fff';
-      g.fillRect(x, y, 1, 1);
-    } else if (s.kind === 'snare') {
-      for (let k = -2; k <= 2; k++) px(s.x - uy * k, s.y + ux * k, 1, 1);
-    } else if (s.kind === 'bass') {
-      g.fillRect(x - 1, y - 1, 3, 3);
-      g.fillStyle = '#e6fbff';
-      g.fillRect(x, y, 1, 1);
-    } else if (s.kind === 'arp') {
-      g.fillRect(x, y - 1, 1, 3);
-      g.fillRect(x - 1, y, 3, 1);
-    } else {
-      g.fillRect(x, y, 1, 2);
-    }
+    g.fillStyle = '#ffffff';
+    px(s.x - 0.5, s.y - 0.5, 1, 1);
   }
   for (const s of enemyShots) {
     g.fillStyle = '#ff5b5b';
@@ -866,7 +941,9 @@ function draw() {
   g.save();
   if (shake > 0) g.translate(Math.round((Math.random() - 0.5) * shake * 8), Math.round((Math.random() - 0.5) * shake * 8));
   drawBackground();
+  drawEq();
   drawEnemies();
+  drawRipples();
   drawLocks();
   drawShots();
   drawFoundations();
@@ -904,12 +981,23 @@ function releaseKey(i) {
   }
 }
 
-function aim(wi, x, y) {
-  const w = weapons[wi];
-  const dy = Math.max(4, turretY - y);
-  w.angle = Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, Math.atan2(x - w.x, dy)));
-  w.lock = findTarget(w, w.angle, LOCK_CONE);   // snap onto whatever is near the finger
-  w.noLock = 0;
+// Touch anywhere above the keys: every cannon targets that spot. Touching a
+// ship (or a boss block) locks all of them onto it; touching empty space
+// points them there for a moment before they go back to aiming themselves.
+function aimAll(x, y) {
+  let best = null, bestD = TAP_RADIUS;
+  for (const t of targets()) {
+    const d = Math.hypot(t.x - x, t.y - y);
+    if (d < bestD) { best = t; bestD = d; }
+  }
+  tapMark = { x, y, age: 0 };
+  for (const w of weapons) {
+    if (w.dead) continue;
+    if (best) { w.lock = best; w.noLock = 0; continue; }
+    w.lock = null;
+    w.noLock = HOLD_AIM;
+    w.angle = Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, Math.atan2(x - w.x, Math.max(4, turretY - y))));
+  }
 }
 
 canvas.addEventListener('pointerdown', e => {
@@ -921,10 +1009,8 @@ canvas.addEventListener('pointerdown', e => {
     pointers.set(e.pointerId, { key: k });
     pressKey(k);
   } else {
-    let wi = 0;
-    for (let i = 1; i < 3; i++) if (Math.abs(x - TURRET_X[i]) < Math.abs(x - TURRET_X[wi])) wi = i;
-    pointers.set(e.pointerId, { weapon: wi });
-    aim(wi, x, y);
+    pointers.set(e.pointerId, { aim: true });
+    aimAll(x, y);
   }
 });
 
@@ -932,7 +1018,7 @@ canvas.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId);
   if (!p) return;
   const { x, y } = toLogical(e);
-  if (p.weapon !== undefined) aim(p.weapon, x, y);
+  if (p.aim) { if (y < keyTop) aimAll(x, y); }
   else if (y >= keyTop - 6) {
     // Slide across the keys like a glissando
     const k = keyAt(x);
@@ -1037,7 +1123,9 @@ addEventListener('keydown', e => {
   if (paused) resumeGame(); else pauseGame();
 });
 
-music.init().then(() => {
+// Start is enabled only after the sounds load AND the update check is done,
+// so a new version can never reload the page under a player's first tap.
+Promise.all([music.init(), ensureLatest()]).then(() => {
   startBtn.disabled = false;
   startBtn.textContent = 'TAP TO START';
 }, () => { startBtn.textContent = 'SOUND FAILED TO LOAD'; });
@@ -1093,15 +1181,24 @@ requestAnimationFrame(frame);
 // the app checks for a new version on every launch and every return to it. When
 // a new version takes over: reload now at the title screen, or at the next quit
 // so a game in progress is never cut off.
-if ('serviceWorker' in navigator) {
-  const hadController = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+// On launch: if a newer version is found, it installs, takes over and the page
+// reloads once, all while Start still says LOADING. Later updates (found when
+// the app comes back to the front) wait for the next Quit.
+function ensureLatest() {
+  if (!('serviceWorker' in navigator)) return Promise.resolve();
+  const sw = navigator.serviceWorker, hadController = !!sw.controller;
+  const check = sw.register('sw.js', { updateViaCache: 'none' }).then(async reg => {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    await reg.update().catch(() => {});
+    if (hadController && (reg.installing || reg.waiting)) {
+      await new Promise(r => sw.addEventListener('controllerchange', r, { once: true }));
+      location.reload();
+      return new Promise(() => {});        // keep Start disabled while it reloads
+    }
+    sw.addEventListener('controllerchange', () => { if (hadController) updateReady = true; });
   }).catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController) return;
-    if (state === 'title') location.reload(); else updateReady = true;
-  });
+  // Never hold the Start button longer than 6 s (slow or offline network).
+  return Promise.race([check, new Promise(r => setTimeout(r, 6000))]);
 }
 
 // Hooks for headless checks.
@@ -1112,5 +1209,5 @@ window.__pv = {
   get counts() { return { stage, waveTimer: +waveTimer.toFixed(1), shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { name: boss.def.name, y: boss.y, hp: bossHp(boss), blocks: boss.blocks.filter(k => k.hp > 0).length }, locks: weapons.map(w => alive(w.lock)) }; },
   skipToBoss() { waveTimer = 0; },
   killBoss() { if (boss) for (const k of boss.blocks) k.hp = 0; },
-  aimAt(i, x, y) { aim(i, x, y); },
+  aimAll(x, y) { aimAll(x, y); },
 };
