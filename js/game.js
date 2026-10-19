@@ -2,7 +2,7 @@
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
 // shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
 // so blocking it in time plays the lead part. Beat three bosses to clear the level.
-import { Music, STEP } from './audio.js?v=0.10.0';
+import { Music, STEP } from './audio.js?v=0.11.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -36,9 +36,9 @@ const WAVES = {
 };
 
 // Enemy waves: ships keep arriving for WAVE_TIME seconds, then the boss comes.
-const WAVE_TIME = 45, ENEMY_HP = 20, SPAWN_GAP = 2.5, ENEMY_SHOT_SPEED = 75;
+const WAVE_TIME = 45, ENEMY_HP = 40, SPAWN_GAP = 1.5;
 const ENEMY_SCALE = 2;               // sprite drawn at 2x so ships are easy to hit
-const SLOTS = [[34, 74], [90, 52], [146, 74], [60, 110], [120, 110]];
+const SLOTS = [[30, 74], [90, 62], [150, 74]];   // one ship over each cannon
 const ENEMY_SPRITE = [
   '....a...a....',
   '.....a.a.....',
@@ -95,7 +95,7 @@ let H = 320, keyTop = 280, turretY = 246, foundTop = 258;
 const weapons = TURRET_X.map((x, i) => ({ x, color: COLORS[i], angle: 0, recoil: 0, flash: 0, dead: false }));
 const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice: null }));
 let foundations = [];
-let shots = [], enemyShots = [], bossShots = [], sparks = [], stars = [];
+let shots = [], noteShots = [], sparks = [], stars = [];
 let enemies = [], boss = null;
 let state = 'title';                 // title, wave, bossIntro, boss, bossDown, over, clear
 let stage = 0, waveTimer = 0, spawned = 0, killed = 0, spawnTimer = 0, stateTimer = 0, lastStep = -1;
@@ -132,7 +132,7 @@ function reset() {
   buildFoundations();
   weapons.forEach(w => { w.dead = false; w.angle = 0; });
   music.muted = [false, false, false];
-  shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null;
+  shots = []; noteShots = []; enemies = []; boss = null;
   spawned = 0; killed = 0; lastStep = -1; stage = 0;
   endEl.hidden = true;
   startWave();
@@ -211,15 +211,16 @@ function findTarget(w, angle, cone) {
 function trackTargets(dt) {
   for (const w of weapons) {
     if (w.dead) continue;
-    // No auto-aim: a cannon only follows a target the player touched, and
-    // stays pointing where it was when that target dies.
-    if (w.lock && !alive(w.lock)) w.lock = null;
+    w.noLock = Math.max(0, (w.noLock || 0) - dt);
+    // Auto-aim: with no target, a cannon takes the ship in its own column (straight up),
+    // so each ship lives long enough to play its part of the call.
+    if (!alive(w.lock)) w.lock = w.noLock > 0 ? null : findTarget(w, 0, 0.45);
     if (w.lock) w.angle = Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, angleTo(w, w.lock)));
   }
 }
 
 function fire(ev) {
-  if (ev.enemy) { if (ev.enemy.hp > 0 && !ev.enemy.leaving) enemyFire(ev.enemy); return; }
+  if (ev.enemy) { if (ev.enemy.hp > 0 && !ev.enemy.leaving) enemyFire(ev.enemy, ev.time); return; }
   const w = weapons[ev.weapon];
   if (w.dead) return;
   w.recoil = 1;
@@ -311,19 +312,19 @@ function spawnEnemy() {
     from: { x: left ? -10 : W + 10, y: -10 },
     ctrl: { x: W / 2 + (Math.random() - 0.5) * 100, y: 150 + Math.random() * 40 },
     hp: ENEMY_HP, flash: 0, color: ENEMY_COLORS[spawned % ENEMY_COLORS.length],
-    rhythm: ENEMY_RHYTHMS[Math.floor(Math.random() * ENEMY_RHYTHMS.length)], voice: spawned % 4, bob: Math.random() * 6,
+    bob: Math.random() * 6,
   });
   spawned++;
   return true;
 }
 
-function enemyFire(e) {
-  const alive = [0, 1, 2].filter(i => !weapons[i].dead);
-  if (!alive.length) return;
-  const i = alive[Math.floor(Math.random() * alive.length)];
-  const tx = TURRET_X[i] + (Math.random() - 0.5) * 24, ty = foundTop;
-  const dx = tx - e.x, dy = ty - (e.y + 9), d = Math.hypot(dx, dy);
-  enemyShots.push({ x: e.x, y: e.y + 9, vx: dx / d * ENEMY_SHOT_SPEED, vy: dy / d * ENEMY_SHOT_SPEED, color: e.color });
+// One note of an enemy's call: a short sound-wave shot straight down at the
+// cannon below, timed to reach that cannon's shield exactly one bar after it
+// was played. Blocking it with that key plays the note back: the response.
+function enemyFire(e, time) {
+  const y0 = e.y + 9;
+  noteShots.push({ port: e.slot, x: Math.round(e.x), y0, y: y0, launch: time,
+    speed: (bossShotTop() - y0) / (16 * STEP), slices: [0, 0, 0], call: true });
   // Silent "sound waves" rippling out under the ship as it drops a bomb
   ripples.push({ x: e.x, y: e.y + 8, color: e.color, age: 0 });
 }
@@ -362,7 +363,7 @@ function defeatBoss() {
   shake = 0.6;
   for (const k of boss.blocks) k.gone = true;
   boss = null;
-  bossShots = [];
+  noteShots = [];
   if (stage < BOSSES.length - 1) {
     stage++;
     state = 'bossDown';
@@ -404,19 +405,25 @@ function updateBoss(dt) {
       // A little sideways scatter so missed notes wear the whole foundation down, not one narrow hole.
       const x = TURRET_X[port] + Math.round((Math.random() - 0.5) * 8);
       const n = Math.max(2, Math.round(len * stepPx / SLICE));
-      bossShots.push({ port, x, y0, y: y0, launch: arrive - travel, slices: new Array(n).fill(0) });
+      noteShots.push({ port, x, y0, y: y0, launch: arrive - travel, speed: BOSS_SHOT_SPEED, slices: new Array(n).fill(0) });
       b.portFlash[port] = 1;
     }
     b.nextStep++;
   }
   for (let i = 0; i < 3; i++) b.portFlash[i] = Math.max(0, b.portFlash[i] - dt * 4);
-  // Positions come from the audio clock, so the shots stay locked to the beat.
-  for (const s of bossShots) s.y = s.y0 + (now - s.launch) * BOSS_SHOT_SPEED;
+}
+
+// Note shots (boss melody bolts and enemy call notes). Positions come from the
+// audio clock, so they stay locked to the beat whatever the frame rate.
+function updateNoteShots() {
+  if (!noteShots.length) return;
+  const now = music.heard();
+  for (const s of noteShots) s.y = s.y0 + (now - s.launch) * s.speed;
   // Each bolt is cut into short slices. As a slice reaches the top of the
   // dome it is absorbed if that key's shield is up, otherwise it carries on
   // and chips the blocks. Hold for the whole note to catch every slice.
   const top = bossShotTop(), tNow = performance.now() / 1000;
-  bossShots = bossShots.filter(s => {
+  noteShots = noteShots.filter(s => {
     const sh = shields[s.port];
     const up = sh.level >= 0.5 || tNow < sh.grace;
     let live = false;
@@ -439,16 +446,32 @@ function updateBoss(dt) {
 
 // ---------- update ----------
 
+// Call and response. On even bars the three ships play a four-note call, one
+// ship (and one pitch) per cannon. Each note's shot lands on that cannon's
+// shield one bar later on the same beat, so blocking them in time repeats the
+// call on the keys: the response. [16th step in the bar, cannon]
+const CALLS = [
+  [[0, 0], [4, 1], [8, 2], [12, 1]],
+  [[0, 2], [4, 1], [8, 0], [12, 1]],
+  [[0, 0], [3, 0], [6, 1], [8, 2]],
+  [[0, 1], [4, 2], [6, 2], [8, 0]],
+  [[0, 2], [2, 1], [4, 0], [8, 1]],
+  [[0, 0], [6, 1], [8, 2], [12, 2]],
+];
+let call = CALLS[0];
+
 // Called by the music scheduler for every 16th step it schedules (slightly
-// ahead of time t). Ships that fire on this step get a note on the same clock
-// and an event, so the shot leaves the ship exactly when its note is heard.
-const ENEMY_RHYTHMS = [[2, 10], [6, 14], [3, 11], [7, 15], [2, 7, 10], [6, 11, 14]];
+// ahead of time t), so each call note sounds and fires exactly on the beat.
 function scheduleEnemies(n, t) {
   if (state !== 'wave' || paused) return;
+  if (Math.floor(n / 16) % 2) return;             // odd bars belong to the response
+  if (n % 16 === 0) call = CALLS[Math.floor(Math.random() * CALLS.length)];
   const chord = music.chordAt(n);
-  for (const e of enemies) {
-    if (e.t < 1 || e.leaving || e.hp <= 0 || !e.rhythm.includes(n % 16)) continue;
-    music.enemyNote(e.voice, chord.triad[Math.floor(Math.random() * 3)] + 24, t);
+  for (const [st, slot] of call) {
+    if (st !== n % 16 || weapons[slot].dead) continue;
+    const e = enemies.find(x => x.slot === slot && x.t >= 1 && !x.leaving && x.hp > 0);
+    if (!e) continue;
+    music.enemyNote(slot, chord.triad[slot] + 24, t);
     music.events.push({ time: t, enemy: e });
   }
 }
@@ -525,6 +548,7 @@ function update(dt) {
     }
   }
   if (boss && state === 'boss') updateBoss(dt);
+  updateNoteShots();
   trackTargets(dt);
 
   // Player shots curve toward their cannon's target, then hit ships
@@ -583,8 +607,6 @@ function update(dt) {
   });
 
   // Enemy shots vs shields and blocks (never the cannons themselves)
-  for (const s of enemyShots) { s.x += s.vx * dt; s.y += s.vy * dt; }
-  enemyShots = enemyShots.filter(s => !shieldBlocks(s.x, s.y) && !hitFoundation(s.x, s.y, 1) && s.y < keyTop);
 
   for (const p of sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
   sparks = sparks.filter(p => p.life > 0);
@@ -832,26 +854,25 @@ function drawShots() {
     g.fillStyle = '#ffffff';
     px(s.x - 0.5, s.y - 0.5, 1, 1);
   }
-  // Enemy bombs are sound waves: three arcs bulging the way they travel, pulsing.
-  for (const s of enemyShots) {
-    const sp = Math.hypot(s.vx, s.vy), ux = s.vx / sp, uy = s.vy / sp, nx = -uy, ny = ux;
-    g.fillStyle = s.color;
-    for (let k = 0; k < 3; k++) {
-      const r = 2 + k * 2 + Math.sin(now * 20 + k) * 0.6;
-      g.globalAlpha = 1 - k * 0.3;
-      for (let a = -1.1; a <= 1.1; a += 0.22) {
-        const along = Math.cos(a) * r - k * 2.5, side = Math.sin(a) * r * 1.3;
-        px(s.x + ux * along + nx * side, s.y + uy * along + ny * side);
-      }
-    }
-    g.globalAlpha = 1;
-    g.fillStyle = '#ffffff';
-    px(s.x + ux * 2, s.y + uy * 2);
-  }
   // Boss shots: long bolts in the colour of the key that blocks them.
   // Its length is the note's length (hold the key for all of it).
-  for (const s of bossShots) {
+  for (const s of noteShots) {
     const x = Math.round(s.x);
+    if (s.call) {
+      // Enemy call notes are sound waves: three pulsing arcs bulging downward,
+      // in the colour of the key that answers them.
+      if (s.slices[0] === 2) continue;
+      g.fillStyle = COLORS[s.port];
+      for (let k = 0; k < 3; k++) {
+        const r = 2.5 + k * 2.2 + Math.sin(now * 20 + k) * 0.6;
+        g.globalAlpha = 1 - k * 0.28;
+        for (let a = -1.15; a <= 1.15; a += 0.18) px(x + Math.sin(a) * r * 1.4, s.y + Math.cos(a) * r - k * 2.6);
+      }
+      g.globalAlpha = 1;
+      g.fillStyle = '#ffffff';
+      px(x, s.y + 2);
+      continue;
+    }
     for (let i = 0; i < s.slices.length; i++) {
       if (s.slices[i] === 2) continue;
       const y = Math.round(s.y - (i + 1) * SLICE);
@@ -1153,7 +1174,7 @@ function quitToTitle() {
   releaseAll();
   music.stop();
   state = 'title';
-  shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null; sparks = [];
+  shots = []; noteShots = []; enemies = []; boss = null; sparks = [];
   weapons.forEach(w => { w.dead = false; w.angle = 0; });
   buildFoundations();
   startEl.hidden = false;
@@ -1249,7 +1270,7 @@ window.__pv = {
   weapons, shields, music,
   get state() { return state; },
   get paused() { return paused; },
-  get counts() { return { stage, waveTimer: +waveTimer.toFixed(1), shots: shots.length, enemies: enemies.length, enemyShots: enemyShots.length, bossShots: bossShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { name: boss.def.name, y: boss.y, hp: bossHp(boss), blocks: boss.blocks.filter(k => k.hp > 0).length }, locks: weapons.map(w => alive(w.lock)) }; },
+  get counts() { return { stage, waveTimer: +waveTimer.toFixed(1), shots: shots.length, enemies: enemies.length, noteShots: noteShots.length, killed, blocks: foundations.map(f => f.count), boss: boss && { name: boss.def.name, y: boss.y, hp: bossHp(boss), blocks: boss.blocks.filter(k => k.hp > 0).length }, locks: weapons.map(w => alive(w.lock)) }; },
   skipToBoss() { waveTimer = 0; },
   killBoss() { if (boss) for (const k of boss.blocks) k.hp = 0; },
   aimAll(x, y) { aimAll(x, y); },
