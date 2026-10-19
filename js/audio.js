@@ -20,19 +20,20 @@ export const LOADOUT = {
     boom: 'BD2575', crash: 'CY2550', crumble: 'MA' },
   bass: { name: 'synth_bass_1', lo: 1, hi: 4 },
   harmony: { name: 'vibraphone', lo: 2, hi: 6 },
-  // The player's own instrument on the shield keys: a big layered synth.
-  // Two detuned saws spread left/right, synth brass for bite, a saw an octave
-  // down for weight, then a filter sweep and a dotted-8th echo (see keyOn).
+  // The player's own instrument on the shield keys: loud and distinctive.
+  // Two detuned "fifths" leads (a power-chord synth) spread left/right, the
+  // gritty "charang" lead for bite, a saw an octave down for weight, then
+  // drive, a filter sweep and a dotted-8th echo (see keyOn).
   // Each enemy ship plays one of these when it fires: little bell/mallet notes
   // from the current chord, up high, so they sit on top of the song.
   enemies: { names: ['kalimba', 'marimba', 'music_box', 'steel_drums'], lo: 3, hi: 6 },
   keys: {
     lo: 2, hi: 6,
     layers: [
-      { name: 'lead_2_sawtooth', vol: 0.34, detune: -9, pan: -0.6 },
-      { name: 'lead_2_sawtooth', vol: 0.34, detune: 9, pan: 0.6 },
-      { name: 'synth_brass_1', vol: 0.3 },
-      { name: 'lead_2_sawtooth', vol: 0.22, octave: -12 },
+      { name: 'lead_7_fifths', vol: 0.42, detune: -8, pan: -0.5 },
+      { name: 'lead_7_fifths', vol: 0.42, detune: 8, pan: 0.5 },
+      { name: 'lead_5_charang', vol: 0.4 },
+      { name: 'lead_2_sawtooth', vol: 0.25, octave: -12 },
     ],
   },
 };
@@ -107,7 +108,11 @@ export class Music {
     // Key bus: dry plus a dotted-8th echo that stays darker than the dry sound.
     const c = this.ctx;
     this.keyBus = c.createGain();
+    this.keyBus.gain.value = 1.35;           // the player's part sits on top of the mix
     this.keyBus.connect(this.out);
+    // Soft-clip drive for the keys: thicker and louder without harsh peaks.
+    this.drive = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; this.drive[i] = Math.tanh(2.2 * x) / Math.tanh(2.2); }
     const delay = c.createDelay(1);
     delay.delayTime.value = STEP * 3;
     const fb = c.createGain();
@@ -286,7 +291,10 @@ export class Music {
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(0.9, t + 0.005);
-    lp.connect(g).connect(this.keyBus);
+    const shaper = c.createWaveShaper();
+    shaper.curve = this.drive;
+    shaper.oversample = '2x';
+    lp.connect(shaper).connect(g).connect(this.keyBus);
     const srcs = [];
     for (const L of LOADOUT.keys.layers) {
       const m = midi + (L.octave || 0);

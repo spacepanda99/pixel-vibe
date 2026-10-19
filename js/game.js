@@ -2,7 +2,7 @@
 // instrument's notes. Enemy ships park and shoot the blocks; shield keys block
 // shots. Every 45 seconds a boss fires down at each cannon on a lead rhythm,
 // so blocking it in time plays the lead part. Beat three bosses to clear the level.
-import { Music, STEP } from './audio.js?v=0.9.0';
+import { Music, STEP } from './audio.js?v=0.10.0';
 
 const W = 180;                       // logical pixels across; height follows the screen shape
 const KEY_H = 40;
@@ -35,9 +35,6 @@ const WAVES = {
   arp:   { len: 12, wl: 4,  amp: 1.5, thick: 1, band: 'high', shape: p => 2 / Math.PI * Math.asin(Math.sin(p)) },
 };
 
-// Shield energy: drains while held, refills when let go, so shields are for timing, not camping.
-const SHIELD_DRAIN = 1 / 2.5, SHIELD_REFILL = 1 / 2;
-
 // Enemy waves: ships keep arriving for WAVE_TIME seconds, then the boss comes.
 const WAVE_TIME = 45, ENEMY_HP = 20, SPAWN_GAP = 2.5, ENEMY_SHOT_SPEED = 75;
 const ENEMY_SCALE = 2;               // sprite drawn at 2x so ships are easy to hit
@@ -55,8 +52,9 @@ const ENEMY_SPRITE = [
 const ENEMY_COLORS = ['#7cff5b', '#ff5b5b', '#c18bff', '#ffd23d'];
 
 // Bosses, one after each wave; beating the last clears the level.
-// Each boss plays the song's melody at you: two bars, each four notes then a
-// rest. A note is [16th step in the bar, cannon, length in 16ths]. It arrives
+// Each boss plays the song's melody at you, one note at a time: a bar of four
+// notes, a bar of rest, a second bar of four, a rest, repeat. A note is
+// [16th step in the bar, cannon, length in 16ths]. It arrives
 // as a bolt as long as the note, Guitar Hero style: hold that cannon's key
 // for the whole bolt and you've played the note (the keys are the lead synth).
 // To win, knock out the 12 big coloured blocks under the boss.
@@ -66,11 +64,11 @@ const BOSS_BLOCKS = 12, BOSS_BLOCK_W = 10, BOSS_BLOCK_H = 8;
 const BOSS_BLOCK_COLORS = ['#ff5b5b', '#ffa23d', '#ffd23d', '#7cff5b', '#37e0ff', '#c18bff'];
 const BOSSES = [
   { name: 'BOSS 1', style: 'saucer', blockHp: 25, hull: '#5a1f6e', dome: '#7a2b94', trim: '#3a1247', eye: '#ffd23d',
-    melody: [[[0, 0, 2], [2, 1, 2], [4, 2, 2], [6, 1, 6]], [[0, 2, 2], [2, 1, 2], [4, 0, 2], [6, 1, 6]]] },
+    melody: [[[0, 0, 2], [4, 1, 2], [8, 2, 2], [12, 1, 3]], [], [[0, 2, 2], [4, 1, 2], [8, 0, 2], [12, 1, 3]], []] },
   { name: 'BOSS 2', style: 'crab', blockHp: 35, hull: '#7a1e2a', dome: '#b8324a', trim: '#3e0d16', eye: '#7cff5b',
-    melody: [[[0, 0, 3], [4, 2, 3], [8, 1, 2], [10, 0, 4]], [[0, 1, 3], [4, 2, 3], [8, 0, 2], [10, 2, 4]]] },
+    melody: [[[0, 0, 3], [4, 2, 2], [8, 1, 3], [12, 0, 2]], [], [[0, 1, 3], [4, 2, 2], [8, 0, 3], [12, 2, 2]], []] },
   { name: 'BOSS 3', style: 'mothership', blockHp: 45, hull: '#6b5310', dome: '#c99a1e', trim: '#3a2c07', eye: '#37e0ff',
-    melody: [[[0, 2, 1], [2, 1, 1], [4, 0, 4], [10, 1, 4]], [[0, 2, 1], [2, 1, 1], [4, 2, 4], [10, 0, 4]]] },
+    melody: [[[0, 2, 2], [4, 1, 2], [8, 0, 4], [13, 1, 2]], [], [[0, 0, 2], [4, 1, 2], [8, 2, 4], [13, 1, 2]], []] },
 ];
 
 // Aim assist: dragging near a target locks the cannon onto it and it tracks
@@ -95,7 +93,7 @@ const endEl = document.getElementById('end');
 
 let H = 320, keyTop = 280, turretY = 246, foundTop = 258;
 const weapons = TURRET_X.map((x, i) => ({ x, color: COLORS[i], angle: 0, recoil: 0, flash: 0, dead: false }));
-const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice: null, energy: 1 }));
+const shields = COLORS.map(color => ({ color, down: 0, level: 0, flash: 0, voice: null }));
 let foundations = [];
 let shots = [], enemyShots = [], bossShots = [], sparks = [], stars = [];
 let enemies = [], boss = null;
@@ -133,7 +131,6 @@ function buildFoundations() {
 function reset() {
   buildFoundations();
   weapons.forEach(w => { w.dead = false; w.angle = 0; });
-  shields.forEach(s => { s.energy = 1; });
   music.muted = [false, false, false];
   shots = []; enemyShots = []; bossShots = []; enemies = []; boss = null;
   spawned = 0; killed = 0; lastStep = -1; stage = 0;
@@ -471,10 +468,8 @@ function update(dt) {
     w.flash = Math.max(0, w.flash - dt * 6);
   }
   shields.forEach((s, i) => {
-    const want = s.down > 0 && !weapons[i].dead;
-    if (want) s.energy = Math.max(0, s.energy - dt * SHIELD_DRAIN);
-    else s.energy = Math.min(1, s.energy + dt * SHIELD_REFILL);
-    const target = want && s.energy > 0 ? 1 : 0;
+    // The shield is up for exactly as long as its key is held.
+    const target = s.down > 0 && !weapons[i].dead ? 1 : 0;
     s.level += (target - s.level) * Math.min(1, dt * (target ? 25 : 10));
     s.flash = Math.max(0, s.flash - dt * 4);
   });
@@ -682,6 +677,11 @@ function drawBackground() {
     g.fillStyle = st.v > 20 ? '#c8d0ff' : st.v > 12 ? '#6a73a8' : '#353a5c';
     px(st.x, st.y, 1, st.v > 24 ? 2 : 1);
   }
+  // Faint dotted line: touches above it aim the cannons
+  g.fillStyle = '#3a4270';
+  g.globalAlpha = 0.5;
+  for (let x = 2; x < W; x += 6) g.fillRect(x, Math.round(H / 2), 2, 1);
+  g.globalAlpha = 1;
   // Ground line the foundations stand on, with a beat light
   g.fillStyle = '#2a3156';
   g.fillRect(0, keyTop - 1, W, 1);
@@ -855,6 +855,7 @@ function drawShots() {
     for (let i = 0; i < s.slices.length; i++) {
       if (s.slices[i] === 2) continue;
       const y = Math.round(s.y - (i + 1) * SLICE);
+      if (y < s.y0) break;                   // not out of the port yet
       g.fillStyle = COLORS[s.port];
       g.globalAlpha = 0.45;
       g.fillRect(x - 3, y, 7, SLICE);
@@ -973,13 +974,7 @@ function drawKeys() {
       g.globalAlpha = 0.25 + 0.1 * s.flash;
       g.fillRect(x0 + 2, faceY + 2, w - 4, faceH - 4);
     }
-    // Shield energy
-    g.globalAlpha = 0.5;
-    g.fillStyle = '#000';
-    g.fillRect(x0 + 4, faceY + faceH - 5, w - 8, 2);
     g.globalAlpha = 1;
-    g.fillStyle = s.energy < 0.2 ? '#ff3b3b' : '#ffffff';
-    g.fillRect(x0 + 4, faceY + faceH - 5, Math.round((w - 8) * s.energy), 2);
   }
 }
 
@@ -1055,7 +1050,8 @@ canvas.addEventListener('pointerdown', e => {
     const k = keyAt(x);
     pointers.set(e.pointerId, { key: k });
     pressKey(k);
-  } else {
+  } else if (y < H / 2) {
+    // Only the top half aims, so pressing keys never nudges the cannons.
     pointers.set(e.pointerId, { aim: true });
     aimAll(x, y);
   }
@@ -1065,7 +1061,7 @@ canvas.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId);
   if (!p) return;
   const { x, y } = toLogical(e);
-  if (p.aim) { if (y < keyTop) aimAll(x, y); }
+  if (p.aim) { if (y < H / 2) aimAll(x, y); }
   else if (y >= keyTop - 6) {
     // Slide across the keys like a glissando
     const k = keyAt(x);
