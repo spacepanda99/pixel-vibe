@@ -23,6 +23,9 @@ export const LOADOUT = {
   // The player's own instrument on the shield keys: a big layered synth.
   // Two detuned saws spread left/right, synth brass for bite, a saw an octave
   // down for weight, then a filter sweep and a dotted-8th echo (see keyOn).
+  // Each enemy ship plays one of these when it fires: little bell/mallet notes
+  // from the current chord, up high, so they sit on top of the song.
+  enemies: { names: ['kalimba', 'marimba', 'music_box', 'steel_drums'], lo: 3, hi: 6 },
   keys: {
     lo: 2, hi: 6,
     layers: [
@@ -133,6 +136,17 @@ export class Music {
     this.bass = bass;
     this.harmony = harmony;
     this.keys = Object.fromEntries(keyNames.map((n, i) => [n, keySets[i]]));
+    const en = LOADOUT.enemies;
+    this.enemyVoices = await Promise.all(en.names.map(name => loadInstrument(c, { name, lo: en.lo, hi: en.hi })));
+  }
+
+  // Chord playing at step n.
+  chordAt(n) { return CHORDS[Math.floor(n / BAR) % CHORDS.length]; }
+
+  // An enemy's note, scheduled on the music clock like everything else.
+  enemyNote(voice, midi, t) {
+    const v = this.enemyVoices?.[voice % this.enemyVoices.length];
+    if (v?.length) this.note(v, midi, t, 0.32, 0.5);
   }
 
   get running() { return !!this.timer && this.ctx.state === 'running'; }
@@ -184,6 +198,8 @@ export class Music {
   }
 
   playStep(n, t) {
+    // Let the game add its own notes for this step (enemy ships firing).
+    if (this.onStep) this.onStep(n, t);
     const s = n % BAR;
     const chord = CHORDS[Math.floor(n / BAR) % CHORDS.length];
     const [mDrum, mBass, mHarm] = this.muted;
